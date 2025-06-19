@@ -1,5 +1,5 @@
-#include "../inc/device_funcs.h"
-// #include "device_funcs.h"
+// #include "../inc/device_funcs.h"
+#include "device_funcs.h"
 
 __global__ void decompose(int i, P_pointers p, G_pointers g, D_pointers d, unsigned int *d_blk, unsigned int *d_blk_counter, unsigned int *d_left, unsigned int *d_left_counter, unsigned int *visited, unsigned int *count, unsigned int *global_count, unsigned int *left_count, unsigned int *validblk, unsigned int* d_hopSz)
 {
@@ -387,7 +387,7 @@ __global__ void fillNeighbors(int i, S_pointers s, G_pointers g, unsigned int *d
   ExclSz[0] = 0;
   PlexSz[0] = 0;
 
-  if (warp_id == 9 && lane_id == 0)
+  if (warp_id == 143 && lane_id == 0)
   {
     printf("Blks: ");
     for (int i = 0; i < counterBase[0]; i++)
@@ -787,17 +787,6 @@ __device__ void push(unsigned int lane_id, unsigned int k, int* cur_id, int * le
                      unsigned int* stackBase, unsigned int* leftSz, unsigned int* PlexSz, unsigned int* CandSz,
                      unsigned int* ExclSz)
 {
-  // for (int i = 0; i < n; i++)
-  // {
-  //   if (labelsBase[i] == P && (nonNeighBase[i]+1 > (k-1)) && (!basic_search(i, neighborsBase + offsetsBase[cur_id[0]], degreeBase[cur_id[0]])))
-  //   {
-  //     //printf("K-plex can't be made\n");
-  //     depthBase[cur_id[0]]--;
-  //     CandSz[0]--;
-  //     cur_id[0] = stackBase[level[0] - 1];
-  //     return;
-  //   }
-  // }
   int local_flag = 0;
   if (lane_id == 0)
   {
@@ -880,31 +869,6 @@ __device__ void push(unsigned int lane_id, unsigned int k, int* cur_id, int * le
   }
 
   __syncwarp();
-
-  int local_left = 0;
-  //if (lane_id == 0){
-  for (int i = lane_id; i < left_count; i+=32)
-  {
-    if (!basic_search(i, l_neighborsBase + l_offsetsBase[cur_id[0]], l_degreeBase[cur_id[0]]))
-    {
-      nonNeighLeftBase[i]++;
-
-    if (nonNeighLeftBase[i] == k)
-    {
-      //atomicAdd(&leftSz[0], -1);
-      local_left++;
-    }
-    }
-  }
-//}
-
-  int sum_left = local_left;
-  for (int offset = 16; offset > 0; offset >>= 1)
-  {
-    sum_left += __shfl_down_sync(0xFFFFFFFF, sum_left, offset);
-  }
-
-  leftSz[0] -= sum_left;
   level[0]++;
 }
 
@@ -961,26 +925,28 @@ __device__ void pop(unsigned int lane_id, unsigned int k, int* cur_id, int * lev
 
     if (depthBase[i] == (level[0] - 1))
     {
-      if (labelsBase[i] == C) //local_cand++;
-        atomicAdd(&CandSz[0], 1);
-      if (labelsBase[i] == X) //local_excl++;
-        atomicAdd(&ExclSz[0], 1);
+      if (labelsBase[i] == C) local_cand++;
+        //atomicAdd(&CandSz[0], 1);
+      if (labelsBase[i] == X) local_excl++;
+        //atomicAdd(&ExclSz[0], 1);
     }
   }
   //}
   int sum_cand = local_cand;
   sum_excl = local_excl;
 
-  // for (int offset = 16; offset > 0; offset >>= 1)
-  // {
-  //   sum_cand += __shfl_down_sync(0xFFFFFFFF, sum_cand, offset);
-  //   sum_excl += __shfl_down_sync(0xFFFFFFFF, sum_excl, offset);
-  // }
-  // if (lane_id == 0)
-  // {
-  //   CandSz[0] += sum_cand;
-  //   ExclSz[0] += sum_excl;
-  // }
+  for (int offset = 16; offset > 0; offset >>= 1)
+  {
+    sum_cand += __shfl_down_sync(0xFFFFFFFF, sum_cand, offset);
+    sum_excl += __shfl_down_sync(0xFFFFFFFF, sum_excl, offset);
+  }
+  if (lane_id == 0)
+  {
+    CandSz[0] += sum_cand;
+    ExclSz[0] += sum_excl;
+  }
+
+  //if (lane_id == 0) printf("CandSz: %d\n", CandSz[0]);
 
   __syncwarp();
 
@@ -997,66 +963,6 @@ __device__ void pop(unsigned int lane_id, unsigned int k, int* cur_id, int * lev
     }
   // }
   __syncwarp();
-  // int local_cand = 0;
-  // local_excl = 0;
-  // if (lane_id == 0){
-  // for (int i = lane_id; i < n; i++)
-  // {
-  //   if (i == cur_id[0]) continue;
-
-  //   if (depthBase[i] == level[0] - 1)
-  //   {
-  //     if (labelsBase[i] == C)
-  //       local_cand++;
-
-  //     else if (labelsBase[i] == X)
-  //       local_excl++;
-  //   }
-
-  //   else if (depthBase[i] == level[0])
-  //     depthBase[i]--;
-    
-  //   if (!basic_search(i, neighborsBase + offsetsBase[cur_id[0]], degreeBase[cur_id[0]]))
-  //     nonNeighBase[i]--;
-  // }}
-
-  // int sum_cand = local_cand;
-  // int sum_excl = local_excl;
-
-  // for (int offset = 16; offset > 0; offset >>= 1)
-  // {
-  //   sum_cand += __shfl_down_sync(0xFFFFFFFF, sum_cand, offset);
-  //   sum_excl += __shfl_down_sync(0xFFFFFFFF, sum_excl, offset);
-  // }
-
-  // if (lane_id == 0)
-  // {
-  //   CandSz[0] += sum_cand;
-  //   ExclSz[0] += sum_excl;
-  // }
-
-  // __syncwarp();
-
-  int local_left = 0;
-  //if (lane_id == 0){
-  for (int i = lane_id; i < left_count; i+=32)
-  {
-    if (!basic_search(i, l_neighborsBase + l_offsetsBase[cur_id[0]], l_degreeBase[cur_id[0]]))
-    {
-      nonNeighLeftBase[i]--;
-      if (nonNeighLeftBase[i] == (k-1))
-        local_left++;
-    }
-  }
-//}
-
-  int sum_left = local_left;
-  for (int offset = 16; offset > 0; offset >>= 1)
-  {
-    sum_left += __shfl_down_sync(0xFFFFFFFF, sum_left, offset);
-  }
-
-  leftSz[0] += sum_left;
 
   if (lane_id == 0)
   {
@@ -1119,6 +1025,76 @@ __device__ int findID(int cur_id, unsigned int level, unsigned int n, uint8_t* l
   return next_id;
 }
 
+__device__ bool isMaximal(unsigned int lane_id, int k, unsigned int* left, unsigned int left_count, unsigned int* l_neighborsBase, unsigned int* l_offsetsBase, unsigned int* l_degreeBase, unsigned int* stack, unsigned int PlexSz, unsigned int* nonNeigh, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase)
+{
+  //printf("Checking Maximality\n");
+  for (int i = 0; i < left_count; i++)
+  {
+    unsigned int u = i;
+    int count = 0;
+    for (int j = lane_id; j < PlexSz; j+=32)
+    {
+      unsigned int v = stack[j];
+      if (!basic_search(u, l_neighborsBase + l_offsetsBase[v], l_degreeBase[v]))
+        count++;
+    }
+    for (int offset = 16; offset > 0; offset >>= 1)
+    {
+      count += __shfl_down_sync(0xFFFFFFFF, count, offset);
+    }
+    count = __shfl_sync(0xFFFFFFFF, count, /*srcLane=*/0);
+    if (count > (k-1)) continue;
+    bool local_invalid = false;
+    for (int j = lane_id; j < PlexSz; j+=32)
+    {
+      unsigned int v = stack[j];
+      bool bad = (nonNeigh[v] >= (k-1)) && (!basic_search(u, l_neighborsBase + l_offsetsBase[v], l_degreeBase[v]));
+
+      local_invalid |= bad;
+    }
+
+    unsigned int mask = __activemask();
+    bool warp_invalid = __any_sync(mask, local_invalid);
+    bool validExtension = !warp_invalid;
+    if (validExtension)
+    {
+      return false;
+    }
+  }
+return true;
+
+// const unsigned mask = __activemask();
+// bool validExtension = false;
+// for (int i = lane_id; i < left_count; i+=32)
+// {
+//   int count = 0;
+//   for (int j = 0; j < PlexSz; j++)
+//   {
+//     unsigned int v = stack[j];
+//     if (!basic_search(i, l_neighborsBase + l_offsetsBase[v], l_degreeBase[v]))
+//       count++;
+//   }
+//   if (count > (k-1)) continue;
+
+//   bool bad = false;
+//   for (int j = 0; j < PlexSz; j++)
+//   {
+//     unsigned int v = stack[j];
+//     if (!basic_search(i, l_neighborsBase + l_offsetsBase[v], l_degreeBase[v]) && (nonNeigh[v] >= (k-1)))
+//     {
+//       bad = true;
+//       break;
+//     }
+//   }
+//   if (!bad)
+//   {
+//     validExtension = true;
+//   }
+//   if (__any_sync(mask, validExtension)) break;
+// }
+// return !__any_sync(mask, validExtension);
+}
+
 __global__ void BKIterative(int i, P_pointers p, S_pointers s, G_pointers g, unsigned int *d_blk, unsigned int *d_left,
                             unsigned int *d_left_counter, unsigned int* plex_count, unsigned int* nonNeigh,
                             unsigned int* nonNeighLeft, unsigned int* depth, unsigned int* stack, unsigned int *global_count)
@@ -1157,9 +1133,10 @@ __global__ void BKIterative(int i, P_pointers p, S_pointers s, G_pointers g, uns
 
   if ((warp_id+WARPS*i) >= g.n)  return;
 
-  if (warp_id < 10)
+  if (local_n[0] < q) return;
+  if (warp_id < 30)
   {
-    //printf("Left Count: %d\n", left_counter[0]);
+    //if (lane_id == 0) printf("Left Count: %d\n", left_counter[0]);
     int level = 0;
     int cur_id = 0;
     //int depth = 0;
@@ -1205,18 +1182,11 @@ __global__ void BKIterative(int i, P_pointers p, S_pointers s, G_pointers g, uns
       }
       else
       {
-        if ((CandSz[0] == 0) && (ExclSz[0] == 0) && (leftSz == 0))
+        if ((CandSz[0] == 0) && (ExclSz[0] == 0) && isMaximal(lane_id, k, leftBase, left_counter[0], l_neighborsBase, l_offsetsBase, l_degreeBase, stackBase, PlexSz[0], nonNeighBase, neighborsBase, offsetsBase, degreeBase))
         {
           if (lane_id == 0)
           {
-          // printf("Maximal-kPlex Found\n");
-          // printf("k-Plex: ");
-          // for (int i = 0; i < PlexSz[0]; i++)
-          // {
-          //   printf("%d ", stackBase[i]);
-          // }
-          // printf("\n");
-          atomicAdd(&plex_count[0], 1);
+            atomicAdd(&plex_count[0], 1);
           }
           pop(lane_id, k, &cur_id, &level, local_n[0], left_counter[0], neighborsBase, l_neighborsBase, offsetsBase, l_offsetsBase, degreeBase, l_degreeBase, labelsBase,
          nonNeighBase, nonNeighLeftBase, depthBase, stackBase, &leftSz, PlexSz, CandSz, ExclSz);
@@ -1225,14 +1195,14 @@ __global__ void BKIterative(int i, P_pointers p, S_pointers s, G_pointers g, uns
         {
           //if (lane_id == 0) printf("Pushing another node to Plex\n");
           cur_id = findID(cur_id, level, local_n[0], labelsBase, depthBase);
-          // if (lane_id == 0)
-          // {
-          // if (cur_id == -1)
-          // {
-          //   printf("I'm going to break\n");
-          //   break;
-          // }
-          // }
+          if (lane_id == 0)
+          {
+            if (cur_id == -1)
+            {
+              printf("Invalid cur_id\n");
+              break;
+            }
+          }
           push(lane_id, k, &cur_id, &level, local_n[0], left_counter[0], neighborsBase, l_neighborsBase, offsetsBase, l_offsetsBase, degreeBase, l_degreeBase, labelsBase,
                nonNeighBase, nonNeighLeftBase, depthBase, stackBase, &leftSz, PlexSz, CandSz, ExclSz);
         }
@@ -1248,7 +1218,7 @@ __global__ void BKIterative(int i, P_pointers p, S_pointers s, G_pointers g, uns
     if (lane_id == 0)
     {
     atomicAdd(&global_count[0], 1);
-    printf("%d warps are finished with Maximal %d-Plexes: %d.\n", global_count[0], k, plex_count[0]);
+    printf("%d warp is finished with Maximal %d-Plexes: %d.\n", warp_id, k, plex_count[0]);
     }
   }
 }
