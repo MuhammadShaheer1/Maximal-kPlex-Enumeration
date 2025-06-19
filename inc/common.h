@@ -1,6 +1,6 @@
 #include <cstdint>
 
-#define BLK_NUMS 56
+#define BLK_NUMS 40
 #define BLK_DIM 1024
 #define WARPS_EACH_BLK (BLK_DIM/32)
 #define WARPS (BLK_NUMS*WARPS_EACH_BLK)

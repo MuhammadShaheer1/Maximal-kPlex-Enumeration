@@ -176,6 +176,184 @@ void computeOffsets(S_pointers &s, unsigned int *d_blk_counter)
     );
 }
 
+int plexCnt = 0;
+
+bool isNeighbor(int u, int v, const graph<int> &g)
+{
+    int begin = g.offsets[u];
+    int end = g.offsets[u+1];
+    for (int i = begin; i < end; i++)
+    {
+        if (g.neighbors[i] == v) return true;
+    }
+    return false;
+}
+
+void update_missing_add(int v, vector<int> &missing, const vector<int>& U, const graph<int> &g)
+{
+    for (int u: U)
+    {
+        if (!isNeighbor(v, u, g))
+            missing[u]++;
+    }
+}
+
+void update_missing_remove(int v, vector<int>& missing, const vector<int>& U, const graph<int> &g)
+{
+    for (int u: U)
+    {
+        if (!isNeighbor(v, u, g))
+            missing[u]--;
+    }
+}
+
+bool isKplex(int v, vector<int>& missing, const vector<int>& U, const graph<int> &g)
+{
+    if (missing[v] > (k-1))
+    {
+        return false;
+    }
+
+    for (int u: U)
+    {
+        if (missing[u] == (k-1) && !isNeighbor(v, u, g))
+            return false;
+    }
+    return true;
+}
+
+bool isMaximal(vector<int> missing, vector<int> P, vector<int> left, const graph<int> &g)
+{
+    //printf("Count: ");
+    for (int u: left)
+    {
+        int count = 0;
+        for (int v: P)
+        {
+            if (!isNeighbor(v, u, g)) count++;
+        }
+        //printf("%d ", count);
+        if (count > k - 1) continue;
+        bool validExtension = true;
+        for (int v: P)
+        {
+            if (!isNeighbor(v, u, g))
+            {
+                if (missing[v] >= (k-1))
+                {
+                    validExtension = false;
+                    break;
+                }
+            }
+        }
+        if (validExtension)
+        {
+            return false;
+        }
+    }
+    //printf("\n");
+    return true;
+}
+
+void bKplex(vector<int> &P, vector<int> &C, vector<int> &X, vector<int> &left, vector<int> &missing, const graph<int> &g)
+{
+    // printf("PSize: %d, CSize: %d, XSize: %d, LeftSz: %d\n", P.size(), C.size(), X.size(), left.size());
+    // printf("Maximal k-plexes: %d\n", plexCnt);
+    // printf("P: ");
+    // for (int u: P)
+    // {
+    //     printf("%d ", u);
+    // }
+    // printf("\n");
+    // printf("C: ");
+    // for (int u: C)
+    // {
+    //     printf("%d ", u);
+    // }
+    // printf("\n");
+    // printf("X: ");
+    // for (int u: X)
+    // {
+    //     printf("%d ", u);
+    // }
+    // printf("\n");
+    // printf("Missing: ");
+    // for (int u: missing)
+    // {
+    //     printf("%d ", u);
+    // }
+    // printf("\n");
+    if (C.empty() && X.empty())
+    {
+        if (P.size() >= lb && isMaximal(missing, P, left, g))
+        {
+            // printf("Maximal k-plex found\n");
+            plexCnt++;
+        }
+        return;
+    }
+    vector<int> candList = C;
+    for (int v: candList)
+    {
+        auto it = find(C.begin(), C.end(), v);
+        if (it == C.end()) return;
+
+        C.erase(it);
+
+        vector<int> C2, X2;
+        vector<int> missing2 = missing;
+
+        update_missing_add(v, missing2, C, g);
+        update_missing_add(v, missing2, X, g);
+        update_missing_add(v, missing2, P, g);
+
+        P.push_back(v);
+
+        for (int u: C)
+        {
+            if (isKplex(u, missing2, P, g))
+                C2.push_back(u);
+        }
+
+        for (int u: X)
+        {
+            if (isKplex(u, missing2, P, g))
+                X2.push_back(u);
+        }
+
+        bKplex(P, C2, X2, left, missing2, g);
+
+        P.pop_back();
+        X.push_back(v);
+        //C.erase(C.begin() + i);
+        //--i;
+    }
+
+
+}
+
+void BKCPUAlgorithm(const graph<int> &g, unsigned int* blk, unsigned int blkCount, unsigned int* leftBase, unsigned int leftCount)
+{
+
+    vector<int> P;
+    vector<int> C(blk+1, blk+blkCount);
+    vector<int> X;
+    vector<int> missing(g.n, 0);
+    //int arr2[1] = {21};
+    vector<int> left(leftBase, leftBase+leftCount);
+    
+    P.push_back(blk[0]);
+    update_missing_add(blk[0], missing, C, g);
+    vector<int> C2;
+    for (int u: C)
+    {
+        if (isKplex(u, missing, P, g))
+            C2.push_back(u);
+    }
+
+    bKplex(P, C2, X, left, missing, g);
+}
+
 void decomposableSearch(const graph<int> &g)
 {
     int *dpos = new int[g.n];
@@ -292,13 +470,21 @@ void decomposableSearch(const graph<int> &g)
     cudaMemset(d_visited, 0, pn * WARPS * sizeof(unsigned int)); // creating a binary structure, threshold and adaptive based on size
     cudaMemset(d_count, 0, pn * WARPS * sizeof(unsigned int));
 
+    //------------CPU Testing only--------
+    // unsigned int *h_blk          = (unsigned int*)malloc(MAX_BLK_SIZE * WARPS * sizeof(unsigned int));
+    // unsigned int *h_left         = (unsigned int*)malloc(MAX_BLK_SIZE * WARPS * sizeof(unsigned int));
+    // unsigned int *h_blk_counter  = (unsigned int*)malloc(      WARPS * sizeof(unsigned int));
+    // unsigned int *h_left_counter = (unsigned int*)malloc(      WARPS * sizeof(unsigned int));
+    //--------------------------------------
+
     cudaEvent_t event_start;
     cudaEvent_t event_stop;
     cudaEventCreate(&event_start);
     cudaEventCreate(&event_stop);
     cudaEventRecord(event_start);
     //printf("Number of iterations: %f\n", double(pn/WARPS));
-    cudaDeviceSetLimit(cudaLimitStackSize, 32*1024);
+    
+    // cudaDeviceSetLimit(cudaLimitStackSize, 32*1024);
     for (int i = 0; i < (pn/WARPS)+1; i++) 
     {
         decompose<<<BLK_NUMS, BLK_DIM>>>(i, plex_pointers, graph_pointers, degen_pointers, d_blk, d_blk_counter, d_left, d_left_counter, d_visited, d_count, global_count, left_count, validblk, d_hopSz);
@@ -321,6 +507,31 @@ void decomposableSearch(const graph<int> &g)
         return;
     }
     cudaDeviceSynchronize();
+    // cudaMemcpy(h_blk,          d_blk,          MAX_BLK_SIZE * WARPS * sizeof(unsigned int), cudaMemcpyDeviceToHost);
+    // cudaMemcpy(h_left,         d_left,         MAX_BLK_SIZE * WARPS * sizeof(unsigned int), cudaMemcpyDeviceToHost);
+    // cudaMemcpy(h_blk_counter,  d_blk_counter,         WARPS * sizeof(unsigned int), cudaMemcpyDeviceToHost);
+    // cudaMemcpy(h_left_counter, d_left_counter,        WARPS * sizeof(unsigned int), cudaMemcpyDeviceToHost);
+    // for (int i = 0; i < WARPS; i++)
+    // {
+    //     printf("i = %d\n", i);
+    //     if (i >= g.n) break;
+    //     //printf("Hello before accessing local chunk of %d with %d\n", i, g.n);
+    //     unsigned int * blkBase = h_blk + i * MAX_BLK_SIZE;
+    //     unsigned int blkCount = h_blk_counter[i];
+    //     unsigned int * leftBase = h_left + i * MAX_BLK_SIZE;
+    //     unsigned int leftCount = h_left_counter[i];
+    //     //if (blkCount - 1 < bd) continue;
+    //     //printf("Hello after accessing local chunk of %d\n", i);
+    //     // unsigned int blkBase[6] = {2,3,1,0,4,5};
+    //     // unsigned int blkCount = 6;
+    //     // unsigned int leftBase[0] = {};
+    //     // unsigned int leftCount = 0;
+    //     BKCPUAlgorithm(peelG, blkBase, blkCount, leftBase, leftCount);
+    //     printf("%d is done with maximal k-plexes: %d\n", i, plexCnt);
+    //     //printf("out of bK\n");
+    // }
+    // //printf("Out of for loop\n");
+    // printf("Maximal k-Plexes: %d\n", plexCnt);
 
     cudaEventRecord(event_stop);
     cudaEventSynchronize(event_stop);
