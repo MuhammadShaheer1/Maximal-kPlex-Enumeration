@@ -45,6 +45,7 @@ void copy_graph_to_gpu(const graph<T> &peelG, int* dpos, int* dseq, G_pointers &
     chkerr(cudaMalloc(&(s.n), WARPS*sizeof(unsigned int)));
     chkerr(cudaMalloc(&(s.m), WARPS*sizeof(unsigned int)));
     chkerr(cudaMalloc(&(s.PSize), WARPS*sizeof(unsigned int)));
+    chkerr(cudaMalloc(&(s.proper), WARPS*sizeof(bool)));
     // --------------------------BNB----------------------
     // chkerr(cudaMalloc(&(s.C1Size), WARPS*sizeof(unsigned int)));
     // chkerr(cudaMalloc(&(s.C2Size), WARPS*sizeof(unsigned int)));

@@ -5,7 +5,6 @@
 #define CAP_LIMIT1 (1<<14)
 #define CAP_LIMIT2 (1<<14)
 #define PSIZE_LIMIT  4096 //Maximum possible size of K-plex
-#define K_LIMIT 4
 
 // cilkarts cilk++
 #if defined(CILK)

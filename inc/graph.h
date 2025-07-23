@@ -25,9 +25,13 @@ struct graph
   uintT *offsets;
   uintT *neighbors;
   uintT *degree;
-  // uintT *neighborsLeft;
-  // uintT *degreeLeft;
-  // uintT *degreeHop;
+  uintT *neighborsLeft;
+  uintT *degreeLeft;
+  uintT *offsetsLeft;
+  uintT *degreeHop;
+  bool proper;
+  intT hopSz;
+  uint8_t* commonMtx;
   
   graph (){}
   graph(const char *filepath)

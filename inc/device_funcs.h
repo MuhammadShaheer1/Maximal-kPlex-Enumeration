@@ -8,11 +8,15 @@ __global__ void calculateDegrees(int i , P_pointers p, G_pointers g, S_pointers 
 
 __device__ bool basic_search(unsigned int node, unsigned int *buffer, unsigned int len);
 
-__global__ void fillNeighbors(int i, S_pointers s, G_pointers g, unsigned int *d_blk, unsigned int *d_blk_counter, unsigned int *d_left, unsigned int *d_left_counter, unsigned int *d_hopSz, unsigned int *neiInG);
+__global__ void fillNeighbors(int i, S_pointers s, G_pointers g, unsigned int *d_blk, unsigned int *d_blk_counter, unsigned int *d_left, unsigned int *d_left_counter, unsigned int *d_hopSz, uint8_t* commonMtx);
 
 // __global__ void kSearch(int i, P_pointers p, S_pointers s, G_pointers g, unsigned int *d_blk, unsigned int *d_left, unsigned int *neiInG, unsigned int *neiInP, unsigned int *d_hopSz, unsigned int *plex_count, unsigned int* nonNeigh, unsigned int* depth);
 
 __global__ void BKIterative(int i, P_pointers p, S_pointers s, G_pointers g, unsigned int *d_blk, unsigned int *d_left, unsigned int *d_left_counter, unsigned int* plex_count, unsigned int* nonNeigh, unsigned int* nonNeighLeft, unsigned int* depth, unsigned int* stack, unsigned int *global_count);
+
+__global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsigned int* d_left, unsigned int* d_blk_counter, unsigned int* d_left_counter, uint8_t* commonMtx, Task* tasks, Task* outTasks, Task* global_tasks, unsigned int N, unsigned int head, unsigned int* tailPtr, unsigned int* global_tail, uint8_t* d_all_labels, unsigned int* d_all_neiInG, unsigned int* d_all_neiInP, uint8_t* global_labels, unsigned int* global_neiInG, unsigned int* global_neiInP, unsigned int* plex_count);
+
+__global__ void buildCommonMtx(int i, P_pointers p, S_pointers s, G_pointers g, uint8_t* commonMtx, unsigned int* d_hopSz);
 
 // __device__ void search(int res, unsigned int warp_id, unsigned int lane_id, S_pointers s, P_pointers p, unsigned int *d_blk, unsigned int *d_left, unsigned int *neiInG, unsigned int *neiInP, unsigned int *d_hopSz);
 

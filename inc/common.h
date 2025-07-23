@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <numeric>
 
 #define BLK_NUMS 40
 #define BLK_DIM 1024
@@ -6,8 +7,11 @@
 #define WARPS (BLK_NUMS*WARPS_EACH_BLK)
 #define MAX_BLK_SIZE 1024
 #define AVG_DEGREE 50
-#define AVG_LEFT_DEGREE 20
-
+#define AVG_LEFT_DEGREE 50
+#define MAX_CAP 1024 * 1024
+#define SMALL_CAP 256 * 512
+#define K_LIMIT 10
+#define CAP MAX_BLK_SIZE * MAX_BLK_SIZE //1024 * 1024 * 1280
 using namespace std;
 
 enum : uint8_t{
@@ -19,7 +23,19 @@ enum : uint8_t{
     //------------BK------------
     P = 0,
     C = 1,
-    X = 2
+    X = 2,
+    U = 3,
+    V = 4,
+    H = 5
+};
+
+enum : uint8_t{        
+    UNLINK2LESS=0,
+    LINK2LESS=1,
+    UNLINK2EQUAL=2,
+    LINK2EQUAL=3,
+    UNLINK2MORE=4,
+    LINK2MORE=5
 };
 
 typedef struct P_pointers{
@@ -50,16 +66,113 @@ typedef struct S_pointers{
     unsigned int *degree;
     unsigned int *l_degree;
     unsigned int *degreeHop;
+    bool *proper;
     uint8_t *labels;
     unsigned int* PSize;
-    //-------------BNB--------
-    // unsigned int* C1Size;
-    // unsigned int* C2Size;
-    //-------------BNB-------
     unsigned int* CSize;
     unsigned int* XSize;
 } S_pointers;
 
+typedef struct H_pointers{
+    unsigned int* h_degree;
+    unsigned int* h_degree_hop;
+    unsigned int* h_offsets;
+    unsigned int* h_neighbors;
+    unsigned int* h_blk_counter;
+    bool *h_proper;
+    unsigned int* h_hopSz;
+    uint8_t* h_commonMtx;
+} H_pointers;
 
+struct State {
+    std::vector<int> P;
+    std::vector<int> C;
+    std::vector<int> X;
+    std::vector<int> missing;
+    std::vector<int> left;
 
+    // Constructor to copy in all five arrays
+    State(std::vector<int> P_,
+          std::vector<int> C_,
+          std::vector<int> X_,
+          std::vector<int> missing_,
+          std::vector<int> left_)
+        : P(std::move(P_))
+        , C(std::move(C_))
+        , X(std::move(X_))
+        , missing(std::move(missing_))
+        , left(std::move(left_))
+    {}
+};
 
+struct State2 {
+    std::vector<int> P;
+    std::vector<int> C;
+    std::vector<int> X;
+    std::vector<int> missing;
+    std::vector<int> left;
+    unsigned int * blk;
+
+    // Constructor to copy in all five arrays
+    State2(std::vector<int> P_,
+          std::vector<int> C_,
+          std::vector<int> X_,
+          std::vector<int> missing_,
+          std::vector<int> left_, 
+          unsigned int* blk_)
+        : P(std::move(P_))
+        , C(std::move(C_))
+        , X(std::move(X_))
+        , missing(std::move(missing_))
+        , left(std::move(left_))
+        , blk(blk_)
+    {}
+};
+
+struct Task{
+    int idx;
+    unsigned int PlexSz;
+    unsigned int CandSz;
+    unsigned int ExclSz;
+    uint8_t* labels;
+    unsigned int* neiInG;
+    unsigned int* neiInP;
+
+    Task() {}
+
+    Task(int idx_,
+         unsigned int PlexSz_,
+         unsigned int CandSz_,
+         unsigned int ExclSz_,
+         uint8_t* labels_,
+         unsigned int* neiInG_,
+         unsigned int* neiInP_)
+         : idx(idx_)
+         , PlexSz(PlexSz_)
+         , CandSz(CandSz_)
+         , ExclSz(ExclSz_)
+         , labels(labels_)
+         , neiInG(neiInG_)
+         , neiInP(neiInP_)
+    {}
+};
+
+typedef struct T_pointers{
+    Task* d_tasks_A;
+    uint8_t* d_all_labels_A;
+    unsigned int* d_all_neiInG_A;
+    unsigned int* d_all_neiInP_A;
+    unsigned int* d_tail_A;
+
+    Task* d_tasks_B;
+    uint8_t* d_all_labels_B;
+    unsigned int* d_all_neiInG_B;
+    unsigned int* d_all_neiInP_B;
+    unsigned int* d_tail_B;
+
+    Task* d_tasks_C;
+    uint8_t* d_all_labels_C;
+    unsigned int* d_all_neiInG_C;
+    unsigned int* d_all_neiInP_C;
+    unsigned int* d_tail_C;
+} T_pointers;

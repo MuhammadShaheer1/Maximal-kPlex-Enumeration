@@ -10,6 +10,10 @@
 #include "sequence.h"
 #include "degeneracy.h"
 #include <cuda.h>
+#include "MRandSet.h"
+#include "MStack.h"
+
+using VtxSet = RandSet<int>;
 
 int k;
 int lb;
