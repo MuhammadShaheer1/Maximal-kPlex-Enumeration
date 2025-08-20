@@ -1,17 +1,19 @@
 #include <cstdint>
 #include <numeric>
 
-#define BLK_NUMS 40
+#define BLK_NUMS 108
 #define BLK_DIM 1024
 #define WARPS_EACH_BLK (BLK_DIM/32)
 #define WARPS (BLK_NUMS*WARPS_EACH_BLK)
 #define MAX_BLK_SIZE 1024
-#define AVG_DEGREE 50
+#define AVG_DEGREE 200
 #define AVG_LEFT_DEGREE 50
-#define MAX_CAP 1024 * 1024
-#define SMALL_CAP 256 * 512
+#define MAX_CAP 2048 * 1024
+#define SMALL_CAP 512 * 512
 #define K_LIMIT 10
-#define CAP MAX_BLK_SIZE * MAX_BLK_SIZE //1024 * 1024 * 1280
+#define MAX_DEPTH 1000
+#define CAP MAX_BLK_SIZE * MAX_BLK_SIZE
+#define ADJSIZE ((MAX_BLK_SIZE * MAX_BLK_SIZE) / 32)
 using namespace std;
 
 enum : uint8_t{
@@ -26,7 +28,9 @@ enum : uint8_t{
     X = 2,
     U = 3,
     V = 4,
-    H = 5
+    H = 5,
+    J = 6,
+    K = 7
 };
 
 enum : uint8_t{        
@@ -68,9 +72,18 @@ typedef struct S_pointers{
     unsigned int *degreeHop;
     bool *proper;
     uint8_t *labels;
+    unsigned int* P;
+    unsigned int* C;
+    unsigned int* C2;
+    unsigned int* X;
     unsigned int* PSize;
     unsigned int* CSize;
+    unsigned int* C2Size;
     unsigned int* XSize;
+    uint32_t *Pset;
+    uint32_t *Cset;
+    uint32_t *C2set;
+    uint32_t *Xset;
 } S_pointers;
 
 typedef struct H_pointers{
@@ -135,8 +148,8 @@ struct Task{
     unsigned int CandSz;
     unsigned int ExclSz;
     uint8_t* labels;
-    unsigned int* neiInG;
-    unsigned int* neiInP;
+    uint16_t* neiInG;
+    uint16_t* neiInP;
 
     Task() {}
 
@@ -145,8 +158,8 @@ struct Task{
          unsigned int CandSz_,
          unsigned int ExclSz_,
          uint8_t* labels_,
-         unsigned int* neiInG_,
-         unsigned int* neiInP_)
+         uint16_t* neiInG_,
+         uint16_t* neiInP_)
          : idx(idx_)
          , PlexSz(PlexSz_)
          , CandSz(CandSz_)
@@ -157,22 +170,40 @@ struct Task{
     {}
 };
 
+struct Frame{
+    int res;
+    int br;
+    int state;
+    int v2delete;
+    vector<int> v2adds;
+
+    Frame() {}
+
+    Frame(int res_,
+          int br_,
+          int state_)
+          : res(res_)
+          , br(br_)
+          , state(state_)
+          {}
+};
+
 typedef struct T_pointers{
     Task* d_tasks_A;
     uint8_t* d_all_labels_A;
-    unsigned int* d_all_neiInG_A;
-    unsigned int* d_all_neiInP_A;
+    uint16_t* d_all_neiInG_A;
+    uint16_t* d_all_neiInP_A;
     unsigned int* d_tail_A;
 
     Task* d_tasks_B;
     uint8_t* d_all_labels_B;
-    unsigned int* d_all_neiInG_B;
-    unsigned int* d_all_neiInP_B;
+    uint16_t* d_all_neiInG_B;
+    uint16_t* d_all_neiInP_B;
     unsigned int* d_tail_B;
 
     Task* d_tasks_C;
     uint8_t* d_all_labels_C;
-    unsigned int* d_all_neiInG_C;
-    unsigned int* d_all_neiInP_C;
+    uint16_t* d_all_neiInG_C;
+    uint16_t* d_all_neiInP_C;
     unsigned int* d_tail_C;
 } T_pointers;
