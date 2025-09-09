@@ -41,8 +41,6 @@ void copy_graph_to_gpu(const graph<T> &peelG, int* dpos, int* dseq, G_pointers &
     chkerr(cudaMalloc(&(s.neighbors), (MAX_BLK_SIZE)*AVG_DEGREE*WARPS*sizeof(unsigned int)));
     chkerr(cudaMalloc(&(s.l_neighbors), (MAX_BLK_SIZE)*AVG_LEFT_DEGREE*WARPS*sizeof(unsigned int)));
 
-    chkerr(cudaMalloc(&(s.labels), (MAX_BLK_SIZE)*WARPS*sizeof(uint8_t)));
-
     chkerr(cudaMalloc(&(s.P), (MAX_BLK_SIZE)*WARPS*sizeof(unsigned int)));
     chkerr(cudaMalloc(&(s.C), (MAX_BLK_SIZE)*WARPS*sizeof(unsigned int)));
     chkerr(cudaMalloc(&(s.C2), (MAX_BLK_SIZE)*WARPS*sizeof(unsigned int)));
@@ -51,7 +49,6 @@ void copy_graph_to_gpu(const graph<T> &peelG, int* dpos, int* dseq, G_pointers &
     chkerr(cudaMalloc(&(s.n), WARPS*sizeof(unsigned int)));
     chkerr(cudaMalloc(&(s.m), WARPS*sizeof(unsigned int)));
     chkerr(cudaMalloc(&(s.PSize), WARPS*sizeof(unsigned int)));
-    chkerr(cudaMalloc(&(s.proper), WARPS*sizeof(bool)));
     // --------------------------BNB----------------------
     // chkerr(cudaMalloc(&(s.C1Size), WARPS*sizeof(unsigned int)));
     // chkerr(cudaMalloc(&(s.C2Size), WARPS*sizeof(unsigned int)));
@@ -59,9 +56,4 @@ void copy_graph_to_gpu(const graph<T> &peelG, int* dpos, int* dseq, G_pointers &
     chkerr(cudaMalloc(&(s.CSize), WARPS*sizeof(unsigned int)));
     chkerr(cudaMalloc(&(s.C2Size), WARPS*sizeof(unsigned int)));
     chkerr(cudaMalloc(&(s.XSize), WARPS*sizeof(unsigned int)));
-
-    cudaMalloc(&s.Pset, WARPS * 32 * sizeof(uint32_t));
-    cudaMalloc(&s.Cset, WARPS * 32 * sizeof(uint32_t));
-    cudaMalloc(&s.C2set, WARPS * 32 * sizeof(uint32_t));
-    cudaMalloc(&s.Xset, WARPS * 32 * sizeof(uint32_t));
 }

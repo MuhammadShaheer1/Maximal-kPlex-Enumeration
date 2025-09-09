@@ -1,14 +1,14 @@
 #include <cstdint>
 #include <numeric>
 
-#define BLK_NUMS 108
+#define BLK_NUMS 108 
 #define BLK_DIM 1024
 #define WARPS_EACH_BLK (BLK_DIM/32)
 #define WARPS (BLK_NUMS*WARPS_EACH_BLK)
 #define MAX_BLK_SIZE 1024
 #define AVG_DEGREE 200
-#define AVG_LEFT_DEGREE 50
-#define MAX_CAP 2048 * 1024
+#define AVG_LEFT_DEGREE 200
+#define MAX_CAP 2048 * 2048
 #define SMALL_CAP 512 * 512
 #define K_LIMIT 10
 #define MAX_DEPTH 1000
@@ -70,8 +70,6 @@ typedef struct S_pointers{
     unsigned int *degree;
     unsigned int *l_degree;
     unsigned int *degreeHop;
-    bool *proper;
-    uint8_t *labels;
     unsigned int* P;
     unsigned int* C;
     unsigned int* C2;
@@ -80,10 +78,6 @@ typedef struct S_pointers{
     unsigned int* CSize;
     unsigned int* C2Size;
     unsigned int* XSize;
-    uint32_t *Pset;
-    uint32_t *Cset;
-    uint32_t *C2set;
-    uint32_t *Xset;
 } S_pointers;
 
 typedef struct H_pointers{
