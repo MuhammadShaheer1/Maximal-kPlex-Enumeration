@@ -1194,7 +1194,7 @@ __device__ void recoverCand23(int lane_id, int n, unsigned int* cand2, unsigned 
   }
 }
 
-__device__ void enqueue_exclude_child(int lane_id, int idx, unsigned int* local_n, unsigned int* plex, unsigned int PlexSz, unsigned int* cand, unsigned int CandSz, unsigned int* excl, unsigned int ExclSz, int minIndex, Task* tasks, Task* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, uint16_t* neiInG, uint16_t* neiInP, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase)
+__device__ void enqueue_exclude_child(int lane_id, int idx, unsigned int* local_n, unsigned int* plex, unsigned int PlexSz, unsigned int* cand, unsigned int CandSz, unsigned int* excl, unsigned int ExclSz, int minIndex, Task* tasks, Task* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, uint16_t* neiInG, uint16_t* neiInP, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase, int* abort)
 {
     uint8_t* labels = d_all_labels;
     uint16_t* all_neiInG = d_all_neiInG;
@@ -1203,17 +1203,23 @@ __device__ void enqueue_exclude_child(int lane_id, int idx, unsigned int* local_
     unsigned int pos2;
     if (lane_id == 0) pos2 = atomicAdd(&tailPtr[0], 1u);
     pos2 = __shfl_sync(0xFFFFFFFF, pos2, 0);
-    if (pos2 + 1> (SMALL_CAP/2)-WARPS) 
+    if (pos2 + 1> (SMALL_CAP)-WARPS) 
     {
       if (lane_id == 0)
       {
       atomicSub(&tailPtr[0], 1);
       pos2 = atomicAdd(&global_tail[0], 1u);
+      printf("position: %d\n", pos2);
       }
       pos2 = __shfl_sync(0xFFFFFFFF, pos2, 0);
-      if (pos2 + 1 >= (MAX_CAP/2)-WARPS)
+      if (pos2 + 1 >= (MAX_CAP)/2-WARPS)
       {
-        printf("Maximum Capacity Reached.\n");
+        if (lane_id == 0)
+        {
+        // printf("Maximum Capacity Reached.\n");
+        // global_tail[0] = 0;
+        abort[0] = 1;
+        }
         return;
       }
       labels = global_labels;
@@ -1263,7 +1269,7 @@ __device__ void enqueue_exclude_child(int lane_id, int idx, unsigned int* local_
 }
 
 
-__device__ void enqueue_include_child(int lane_id, int idx, int k, int lb, unsigned int* local_n, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase, uint8_t* commonMtx, unsigned int* plex, unsigned int& PlexSz, unsigned int* cand, unsigned int& CandSz, unsigned int* excl, unsigned int& ExclSz, uint16_t* neiInP, uint16_t* neiInG, int minIndex, Task* tasks, Task* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, unsigned long long* cycles, uint32_t* adjList, uint16_t* local_sat)
+__device__ void enqueue_include_child(int lane_id, int idx, int k, int lb, unsigned int* local_n, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase, uint8_t* commonMtx, unsigned int* plex, unsigned int& PlexSz, unsigned int* cand, unsigned int& CandSz, unsigned int* excl, unsigned int& ExclSz, uint16_t* neiInP, uint16_t* neiInG, int minIndex, Task* tasks, Task* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, unsigned long long* cycles, uint32_t* adjList, uint16_t* local_sat, int* abort)
 {
   uint8_t* labels = d_all_labels;
   uint16_t* all_neiInG = d_all_neiInG;
@@ -1388,7 +1394,7 @@ __device__ void enqueue_include_child(int lane_id, int idx, int k, int lb, unsig
     unsigned int pos;
     if (lane_id == 0) pos = atomicAdd(&tailPtr[0], 1u);
     pos = __shfl_sync(0xFFFFFFFF, pos, 0);
-    bool use_global = (pos + 1 > (SMALL_CAP/2)-WARPS);
+    bool use_global = (pos + 1 > (SMALL_CAP)-WARPS);
 
     if (use_global) 
     {
@@ -1396,11 +1402,17 @@ __device__ void enqueue_include_child(int lane_id, int idx, int k, int lb, unsig
       {
         atomicSub(&tailPtr[0], 1);
         pos = atomicAdd(&global_tail[0], 1u);
+        printf("position: %d\n", pos);
       }
       pos = __shfl_sync(0xFFFFFFFF, pos, 0);
-      if (pos + 1 >= (MAX_CAP/2)-WARPS)
+      if (pos + 1 >= (MAX_CAP)/2-WARPS)
       {
-        printf("Maximum Capacity Reached.\n");
+        if (lane_id == 0)
+        {
+        // printf("Maximum Capacity Reached.\n");
+        // global_tail[0] = 0;
+        abort[0] = 1;
+        }
         return;
       }
       labels = global_labels;
@@ -1450,10 +1462,11 @@ __device__ void enqueue_include_child(int lane_id, int idx, int k, int lb, unsig
   __syncwarp();
 }
 
-__device__ void branchInCand2(int warp_id, int lane_id, int minIndex, int idx, int k, int lb, unsigned int PlexSz, unsigned int CandSz, unsigned int ExclSz, unsigned int* local_n, Task* tasks, Task* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, unsigned int* plex, unsigned int* cand, unsigned int* excl, uint16_t* neiInG, uint16_t* neiInP, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase,uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, uint8_t* commonMtx, unsigned long long* cycles, uint32_t* adjList, uint16_t* local_sat)
+__device__ void branchInCand2(int warp_id, int lane_id, int minIndex, int idx, int k, int lb, unsigned int PlexSz, unsigned int CandSz, unsigned int ExclSz, unsigned int* local_n, Task* tasks, Task* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, unsigned int* plex, unsigned int* cand, unsigned int* excl, uint16_t* neiInG, uint16_t* neiInP, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase,uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, uint8_t* commonMtx, unsigned long long* cycles, uint32_t* adjList, uint16_t* local_sat, int* abort)
 {
-  enqueue_exclude_child(lane_id, idx, local_n, plex, PlexSz, cand, CandSz, excl, ExclSz, minIndex, tasks, global_tasks, tailPtr, global_tail, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase);  
-  enqueue_include_child(lane_id, idx, k, lb, local_n, neighborsBase, offsetsBase, degreeBase, commonMtx, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, minIndex, tasks, global_tasks, tailPtr, global_tail, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, cycles, adjList, local_sat);
+  enqueue_exclude_child(lane_id, idx, local_n, plex, PlexSz, cand, CandSz, excl, ExclSz, minIndex, tasks, global_tasks, tailPtr, global_tail, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, abort);  
+  if (abort[0]) return;
+  enqueue_include_child(lane_id, idx, k, lb, local_n, neighborsBase, offsetsBase, degreeBase, commonMtx, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, minIndex, tasks, global_tasks, tailPtr, global_tail, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, cycles, adjList, local_sat, abort);
 }
 
 __device__ void initializePCX(int lane_id, const uint8_t* __restrict__ labelsBase, unsigned int n, unsigned int* __restrict__ plex, unsigned int* __restrict__ cand, unsigned int* __restrict__ excl)
@@ -1480,6 +1493,7 @@ __device__ void initializePCX(int lane_id, const uint8_t* __restrict__ labelsBas
     int x_wbase = __shfl_sync(FULL, x_base, 0);
 
     // if (lane_id == 0) printf("plex: %d\n", plex[p_base]);
+    // if (lane_id == 0) printf("lbl: %d\n", labelsBase[i]);
 
     if (lbl == P) plex[p_wbase + p_rank] = i;
     if (lbl == C) cand[c_wbase + c_rank] = i;
@@ -1497,7 +1511,7 @@ __device__ void initializePCX(int lane_id, const uint8_t* __restrict__ labelsBas
 }
 
 
-__global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsigned int* d_left, unsigned int* d_blk_counter, unsigned int* d_left_counter, uint8_t* commonMtx, Task* tasks, Task* outTasks, Task* global_tasks, unsigned int N, unsigned int head, unsigned int* tailPtr, unsigned int* global_tail, uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, unsigned int* plex_count, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj)
+__global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsigned int* d_left, unsigned int* d_blk_counter, unsigned int* d_left_counter, uint8_t* commonMtx, Task* tasks, Task* outTasks, Task* global_tasks, unsigned int N, unsigned int head, unsigned int* tailPtr, unsigned int* global_tail, uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, unsigned int* plex_count, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* abort)
 {
   
   unsigned int global_index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1509,6 +1523,18 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
   int q = p.lb;
   Task t = tasks[warp_id+WARPS*i];
   uint8_t* labelsBase = t.labels;
+
+  // if (lane_id == 0)
+  // {
+  //   // printf("idx: %d, warp_id: %d\n", t.idx, warp_id);
+  //   // if (t.idx != 0) return;
+  //   printf("Labels: %d\n", labelsBase[0]);
+  //   // for (int j = 0; j < MAX_BLK_SIZE; j++)
+  //   // {
+  //   //   printf("%d ", labelsBase[j]);
+  //   // }
+  //   // printf("\n");
+  // }
 
   unsigned int* leftBase = d_left + t.idx * MAX_BLK_SIZE;
   uint16_t* neiInG = t.neiInG;
@@ -1529,9 +1555,9 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
   unsigned int* l_offsetsBase = s.l_offsets + t.idx * MAX_BLK_SIZE;
   unsigned int* l_neighborsBase = s.l_neighbors + t.idx * MAX_BLK_SIZE * AVG_LEFT_DEGREE;
 
-  unsigned int* plex = s.P + warp_id * MAX_BLK_SIZE;
-  unsigned int* cand = s.C + warp_id * MAX_BLK_SIZE;
-  unsigned int* excl = s.X + warp_id * MAX_BLK_SIZE;
+  unsigned int* plex = s.PB + warp_id * MAX_BLK_SIZE;
+  unsigned int* cand = s.CB + warp_id * MAX_BLK_SIZE;
+  unsigned int* excl = s.XB + warp_id * MAX_BLK_SIZE;
 
   uint16_t* local_sat = d_sat + warp_id * MAX_BLK_SIZE;
   uint16_t* local_commons = d_commons + warp_id * MAX_BLK_SIZE;
@@ -1631,7 +1657,7 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
     pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
          
         
-    branchInCand2(warp_id, lane_id, pivot, t.idx, k, q, PlexSz, CandSz, ExclSz, &n, outTasks, global_tasks, tailPtr, global_tail, plex, cand, excl, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, commonMtxBase, cycles, adjList, local_sat);
+    branchInCand2(warp_id, lane_id, pivot, t.idx, k, q, PlexSz, CandSz, ExclSz, &n, outTasks, global_tasks, tailPtr, global_tail, plex, cand, excl, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, commonMtxBase, cycles, adjList, local_sat, abort);
     return;
   }
 
@@ -1690,7 +1716,7 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
     return;
   }
 
-  branchInCand2(warp_id, lane_id, pivot, t.idx, k, q, PlexSz, CandSz, ExclSz, &n, outTasks, global_tasks, tailPtr, global_tail, plex, cand, excl, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, commonMtxBase, cycles, adjList, local_sat);
+  branchInCand2(warp_id, lane_id, pivot, t.idx, k, q, PlexSz, CandSz, ExclSz, &n, outTasks, global_tasks, tailPtr, global_tail, plex, cand, excl, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, commonMtxBase, cycles, adjList, local_sat, abort);
   __syncwarp();
 }
 
@@ -1823,12 +1849,14 @@ __global__ void buildCommonMtx(int idx, P_pointers p, S_pointers s, G_pointers g
   // }
 }
 
-__global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_pointers t, unsigned int* d_blk_counter, unsigned int* d_res, unsigned int* d_br, unsigned int* d_state, uint16_t* neiInG, uint16_t* neiInP, unsigned int* plex_count, uint8_t* commonMtx, unsigned int* recCand1, unsigned int* recCand2, unsigned int* d_v2delete, uint32_t* d_adj, unsigned long long* cycles, int* abort_flag)
+__global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_pointers t, unsigned int* d_blk_counter, unsigned int* d_res, unsigned int* d_br, unsigned int* d_state, unsigned int* d_len, unsigned int* d_sz, uint16_t* neiInG, uint16_t* neiInP, unsigned int* plex_count, uint8_t* commonMtx, unsigned int* recCand1, unsigned int* recCand2, unsigned int* d_v2delete, uint32_t* d_adj, unsigned long long* cycles, int* abort_flag)
 {
   unsigned int global_index = blockIdx.x * blockDim.x + threadIdx.x;
   unsigned int warp_id = (global_index / 32);
   unsigned int lane_id = threadIdx.x % 32;
   unsigned int local_warp_id = threadIdx.x >> 5;
+
+  // if (warp_id != 0) return;
 
   if ((warp_id+WARPS*idx) >= (g.n-p.lb+2)) return;
 
@@ -1861,6 +1889,8 @@ __global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_poi
   unsigned int* br = d_br + warp_id * MAX_DEPTH;
   unsigned int* state = d_state + warp_id * MAX_DEPTH;
   unsigned int* v2delete = d_v2delete + warp_id * MAX_DEPTH;
+  unsigned int* length = d_len + warp_id;
+  unsigned int* size = d_sz + warp_id;
 
   uint16_t* neiInGBase = neiInG + warp_id * MAX_BLK_SIZE;
   uint16_t* neiInPBase = neiInP + warp_id * MAX_BLK_SIZE;
@@ -1883,17 +1913,15 @@ __global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_poi
   }
   n = __shfl_sync(0xFFFFFFFF, n, 0);
 
-  __shared__ unsigned int sh_PlexSz[WARPS_EACH_BLK];
-  __shared__ unsigned int sh_Cand1Sz[WARPS_EACH_BLK];
-  __shared__ unsigned int sh_Cand2Sz[WARPS_EACH_BLK];
-  __shared__ unsigned int sh_ExclSz[WARPS_EACH_BLK];
+  // __shared__ unsigned int sh_PlexSz[WARPS_EACH_BLK];
+  // __shared__ unsigned int sh_Cand1Sz[WARPS_EACH_BLK];
+  // __shared__ unsigned int sh_Cand2Sz[WARPS_EACH_BLK];
+  // __shared__ unsigned int sh_ExclSz[WARPS_EACH_BLK];
 
-  if (lane_id == 0) sh_PlexSz[local_warp_id] = PlexSz[0]; 
-  if (lane_id == 0) sh_Cand1Sz[local_warp_id] = Cand1Sz[0];
-  if (lane_id == 0) sh_Cand2Sz[local_warp_id] = Cand2Sz[0];
-  if (lane_id == 0) sh_ExclSz[local_warp_id] = ExclSz[0];
-  
-  int sz = 0;
+  // if (lane_id == 0) sh_PlexSz[local_warp_id] = PlexSz[0]; 
+  // if (lane_id == 0) sh_Cand1Sz[local_warp_id] = Cand1Sz[0];
+  // if (lane_id == 0) sh_Cand2Sz[local_warp_id] = Cand2Sz[0];
+  // if (lane_id == 0) sh_ExclSz[local_warp_id] = ExclSz[0];
 
   for (int i = lane_id; i < n; i+=32)
   {
@@ -1934,11 +1962,19 @@ __global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_poi
   //   }
   //   printf("\n");
   }
-  
-  res[sz] = k - 1;
-  br[sz] = 1;
-  state[sz] = 0;
-  sz++;
+  int sz;
+  if (!abort_flag[0])
+  {
+    sz = 0;
+    res[sz] = k - 1;
+    br[sz] = 1;
+    state[sz] = 0;
+    sz++;
+  }
+  else 
+  {
+    sz = size[0];
+  }
   
   int u, found_idx;
   
@@ -1951,10 +1987,576 @@ __global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_poi
     }
     switch(state[sz-1])
     {
+      //reserve my slot, slot -> []
+      case 0:
+        // printf("state: %d, size: %d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", state[sz-1], sz, sh_PlexSz[local_warp_id], sh_Cand1Sz[local_warp_id], sh_Cand2Sz[local_warp_id], sh_ExclSz[local_warp_id]);
+        if (Cand2Sz[0] == 0)
+        {
+          if (!abort_flag[0])
+          {
+          if (PlexSz[0] + Cand1Sz[0] < q)
+          {
+            sz--;
+            continue;
+          }
+          
+          bool cond = !upperBoundK2(lane_id, k, q, plex, neiInGBase, PlexSz[0]);
+          
+          if (PlexSz[0] > 1 && cond)
+          {
+            sz--;
+            continue;
+          }
+          
+          int pos;
+          if (lane_id == 0)
+          {
+            unsigned int* tail = t.d_tail_A;
+            pos = atomicAdd(&tail[0], 1u);
+          }
+          pos = __shfl_sync(0xFFFFFFFF, pos, 0);
+          // if (lane_id == 0) printf("pos: %d, max_cap: %d\n", pos, MAX_CAP);
+          
+
+          uint8_t* newLabels = t.d_all_labels_A + pos * MAX_BLK_SIZE;
+          uint16_t* newNeiInG = t.d_all_neiInG_A + pos * MAX_BLK_SIZE;
+          uint16_t* newNeiInP = t.d_all_neiInP_A + pos * MAX_BLK_SIZE;
+          for (int i = lane_id; i < n; i+=32)
+          {
+            newLabels[i] = U;
+            newNeiInG[i] = neiInGBase[i];
+            newNeiInP[i] = neiInPBase[i];
+          }
+          for (int i = lane_id; i < PlexSz[0]; i+=32)
+          {
+            const int v = plex[i];
+            newLabels[v] = P;
+          }
+          for (int i = lane_id; i < Cand1Sz[0]; i+=32)
+          {
+            const int v = cand1[i];
+            newLabels[v] = C;
+          }
+          for (int i = lane_id; i < Cand2Sz[0]; i+=32)
+          {
+            const int v = cand2[i];
+            newLabels[v] = H;
+          }
+          for (int i = lane_id; i < ExclSz[0]; i+=32)
+          {
+            const int v = excl[i];
+            newLabels[v] = X;
+          }
+
+          
+          __syncwarp();
+          if (lane_id == 0)
+          {
+            Task &nt = t.d_tasks_A[pos];
+            nt.idx = warp_id;
+            nt.PlexSz = PlexSz[0];
+            nt.CandSz = Cand1Sz[0];
+            nt.ExclSz = ExclSz[0];
+            nt.labels = newLabels;
+            nt.neiInG = newNeiInG;
+            nt.neiInP = newNeiInP;
+          
+          // __syncwarp();
+          // if (warp_id == 0)
+          // {
+          //   // printf("idx: %d\n", t.idx);
+          //   // if (t.idx == 0) return;
+          //   // printf("Labels1: %d\n", newLabels[0]);
+          //   for (int j = 0; j < MAX_BLK_SIZE; j++)
+          //   {
+          //     printf("%d ", nt.labels[j]);
+          //   }
+          //   printf("\n");
+          // }
+        }
+        __syncwarp();
+        if (pos+1 > (MAX_CAP/2)-WARPS)
+        {
+          // if(lane_id == 0) printf("Maximum Capacity Reached in kSearch\n");
+          // atomicExch(abort_flag, 1);
+          if (lane_id == 0) abort_flag[0] = 1;
+          size[0] = sz;
+          if (warp_id == 4148 && lane_id == 0) printf("%d is returning with sz: %d, state:%d, res: %d, br:%d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", warp_id, sz, state[sz-1], res[sz-1], br[sz-1],PlexSz[0], Cand1Sz[0], Cand2Sz[0], ExclSz[0]);
+          return;
+        }
+      }
+          if (lane_id == 0) abort_flag[0] = 0;
+          sz--;
+          continue;
+        }
+        
+        if (lane_id == 0)
+        {
+          u = cand2[Cand2Sz[0]-1];
+          excl[ExclSz[0]++] = u;
+          --Cand2Sz[0];
+          v2delete[sz-1] = u;
+
+          res[sz] = res[sz-1];
+          br[sz] = 1;
+          state[sz] = 0;
+
+          state[sz-1] = 1;
+        }
+        sz++;
+        __syncwarp();
+        
+        continue;
+
+      case 1:
+      // printf("state: %d, size: %d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", state[sz-1], sz, sh_PlexSz[local_warp_id], sh_Cand1Sz[local_warp_id], sh_Cand2Sz[local_warp_id], sh_ExclSz[local_warp_id]);      
+        if(lane_id == 0)
+        {
+          state[sz-1] = 2;
+
+          u = v2delete[sz-1];
+          cand2[Cand2Sz[0]++] = u;
+        }
+        u = v2delete[sz-1];
+        found_idx = -1;
+        for (int base = 0; base < ExclSz[0]; base += 32)
+        {
+          int idx = base + lane_id;
+
+          bool match = (idx < ExclSz[0]) && (excl[idx] == u);
+          unsigned hit = __ballot_sync(0xFFFFFFFF, match);
+          if (hit)
+          {
+            int leader = __ffs(hit) - 1;
+            int idx_global = base + leader;
+            found_idx = __shfl_sync(0xFFFFFFFF, idx_global, leader);
+            break;
+          }
+        }
+          
+        if (lane_id == 0 && found_idx >= 0)
+        {
+          int last = --ExclSz[0];
+          int temp = excl[last];
+          excl[last] = excl[found_idx];
+          excl[found_idx] = temp;
+        }
+        __syncwarp();
+        
+        
+        continue;
+      case 2:
+      // printf("state: %d, size: %d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", state[sz-1], sz, sh_PlexSz[local_warp_id], sh_Cand1Sz[local_warp_id], sh_Cand2Sz[local_warp_id], sh_ExclSz[local_warp_id]);
+        if (br[sz-1] < res[sz-1])
+        {
+          if (lane_id == 0)
+          {
+            u = cand2[--Cand2Sz[0]];
+            plex[PlexSz[0]++] = u;
+          }
+          __syncwarp();
+          unsigned int node = plex[PlexSz[0]-1];
+          for (int i = lane_id; i < degreeBase[node]; i+=32)
+          {
+            const int nei = neighborsBase[offsetsBase[node]+i];
+            neiInPBase[nei]++;
+          }
+          
+          addG(lane_id, node, neiInGBase, n, neighborsBase, offsetsBase, degreeBase);
+          // printf("lane_id: %d, node: %d\n", lane_id, node);
+          updateCand13(lane_id, cand1, commonMtxBase, recCand1Base, neiInGBase, sz, n, node, &Cand1Sz[0], neighborsBase, degreeBase, offsetsBase);
+
+          const uint8_t* __restrict__ row = commonMtxBase + (size_t) node * n;
+          updateCand23(lane_id, cand2, row, recCand2Base, sz, &Cand2Sz[0]);           
+
+          if (Cand2Sz[0])
+          {
+            if (lane_id == 0)
+            {
+              u = cand2[--Cand2Sz[0]];
+              excl[ExclSz[0]++] = u;
+              v2delete[sz-1] = u;
+
+              state[sz-1] = 3;
+              res[sz] = res[sz-1] - br[sz-1];
+              br[sz] = 1;
+              state[sz] = 0;
+            }
+            __syncwarp();
+            sz++;
+            continue;
+          }
+          else
+          {
+            if (lane_id == 0)
+            {
+              state[sz-1] = 4;
+              res[sz] = res[sz-1] - br[sz-1];
+              br[sz] = 1;
+              state[sz] = 0;
+            }
+            __syncwarp();
+            sz++;
+            continue;
+          }
+        }
+        else
+        {
+          if (lane_id == 0)
+          {
+            state[sz-1] = 4;
+          }
+          __syncwarp();
+          continue;
+        }
+      case 3:
+      // printf("state: %d, size: %d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", state[sz-1], sz, sh_PlexSz[local_warp_id], sh_Cand1Sz[local_warp_id], sh_Cand2Sz[local_warp_id], sh_ExclSz[local_warp_id]);
+        if (lane_id == 0)
+        {
+          br[sz-1]++;
+          state[sz-1] = 2;
+
+          u = v2delete[sz-1];
+          cand2[Cand2Sz[0]++] = u;
+        }
+        u = v2delete[sz-1];
+        found_idx = -1;
+        for (int base = 0; base < ExclSz[0]; base += 32)
+        {
+          int idx = base + lane_id;
+
+          bool match = (idx < ExclSz[0]) && (excl[idx] == u);
+          unsigned hit = __ballot_sync(0xFFFFFFFF, match);
+          if (hit)
+          {
+            int leader = __ffs(hit) - 1;
+            int idx_global = base + leader;
+            found_idx = __shfl_sync(0xFFFFFFFF, idx_global, leader);
+            break;
+          }
+        }
+          
+        if (lane_id == 0 && found_idx >= 0)
+        {
+          int last = --ExclSz[0];
+          int temp = excl[last];
+          excl[last] = excl[found_idx];
+          excl[found_idx] = temp;
+        }
+        __syncwarp();
+        continue;
+      case 4:
+      // printf("state: %d, size: %d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", state[sz-1], sz, sh_PlexSz[local_warp_id], sh_Cand1Sz[local_warp_id], sh_Cand2Sz[local_warp_id], sh_ExclSz[local_warp_id]); 
+      if (br[sz-1] == res[sz-1])
+      {
+        if (!abort_flag[0])
+      { 
+          if (lane_id == 0)
+          {
+            u = cand2[--Cand2Sz[0]];
+            plex[PlexSz[0]++] = u;
+          }
+          __syncwarp();
+          unsigned int node = plex[PlexSz[0]-1];
+          for (int i = lane_id; i < degreeBase[node]; i+=32)
+          {
+            const int nei = neighborsBase[offsetsBase[node]+i];
+            neiInPBase[nei]++;
+          }
+          addG(lane_id, node, neiInGBase, n, neighborsBase, offsetsBase, degreeBase);
+          updateCand13(lane_id, cand1, commonMtxBase, recCand1Base, neiInGBase, sz, n, node, &Cand1Sz[0], neighborsBase, degreeBase, offsetsBase);
+          if (PlexSz[0] + Cand1Sz[0] < q)
+          {
+            if (lane_id == 0)
+            {
+              state[sz-1] = 5;
+            }
+            __syncwarp();
+            continue;
+          }
+          if (PlexSz[0] > 1 && !upperBoundK2(lane_id, k, q, plex, neiInGBase, PlexSz[0]))
+          {
+            if (lane_id == 0)
+            {
+              state[sz-1] = 5;
+            }
+            __syncwarp();
+            continue;
+          }
+          
+
+          int len = 0;
+          for (int i = 0; i < Cand1Sz[0]; i++)
+          {
+            const int v = cand1[i];
+            if (!isKplex2(lane_id, v, k, PlexSz[0], neiInPBase, plex, n, neighborsBase, offsetsBase, degreeBase, adjList))
+            {
+              if (lane_id == 0)
+              {
+                int temp = cand1[Cand1Sz[0]-1];
+                cand1[Cand1Sz[0]-1] = cand1[i];
+                cand1[i] = temp;
+                Cand1Sz[0]--;
+                len++;
+              }
+              __syncwarp();
+              subG(lane_id, v, neiInGBase, n, neighborsBase, offsetsBase, degreeBase);
+              i--;
+            }
+          }
+          len = __shfl_sync(0xFFFFFFFF, len, 0);
+          if (lane_id == 0) length[0] = len;
+          
+          int pos;
+          if (lane_id == 0)
+          {
+            unsigned int* tail = t.d_tail_A;
+            pos = atomicAdd(&tail[0], 1u);
+            state[sz-1] = 5;
+          }
+          pos = __shfl_sync(0xFFFFFFFF, pos, 0);
+          // if (lane_id == 0) printf("pos: %d, max_cap: %d\n", pos, MAX_CAP);
+          
+          size_t baseOff = (size_t)pos * (size_t)MAX_BLK_SIZE;
+          uint8_t* newLabels = t.d_all_labels_A + baseOff;
+          uint16_t* newNeiInG = t.d_all_neiInG_A + baseOff;
+          uint16_t* newNeiInP = t.d_all_neiInP_A + baseOff;
+          for (int i = lane_id; i < n; i+=32)
+          {
+            newLabels[i] = U;
+            newNeiInG[i] = neiInGBase[i];
+            int temp = neiInPBase[i];
+            newNeiInP[i] = temp;
+          }
+          for (int i = lane_id; i < PlexSz[0]; i+=32)
+          {
+            const int v = plex[i];
+            newLabels[v] = P;
+          }
+          for (int i = lane_id; i < Cand1Sz[0]; i+=32)
+          {
+            const int v = cand1[i];
+            newLabels[v] = C;
+          }
+          for (int i = lane_id; i < Cand2Sz[0]; i+=32)
+          {
+            const int v = cand2[i];
+            newLabels[v] = H;
+          }
+          for (int i = lane_id; i < ExclSz[0]; i+=32)
+          {
+            const int v = excl[i];
+            newLabels[v] = X;
+          }
+          __syncwarp();
+          // if (warp_id == 0 && lane_id == 0)
+          // {
+          //   // printf("idx: %d\n", t.idx);
+          //   // if (t.idx == 0) return;
+          //   printf("Labels2: %d\n", newLabels[0]);
+          //   // for (int j = 0; j < MAX_BLK_SIZE; j++)
+          //   // {
+          //   //   printf("%d ", newLabels[j]);
+          //   // }
+          //   // printf("\n");
+          // }
+          if (lane_id == 0)
+          {
+            Task &nt = t.d_tasks_A[pos];
+            nt.idx = warp_id;
+            nt.PlexSz = PlexSz[0];
+            nt.CandSz = Cand1Sz[0];
+            nt.ExclSz = ExclSz[0];
+            nt.labels = newLabels;
+            nt.neiInG = newNeiInG;
+            nt.neiInP = newNeiInP;
+          }
+          __syncwarp();
+
+          if (pos+1 > (MAX_CAP/2)-WARPS)
+          {
+            // if(lane_id == 0) printf("Maximum Capacity Reached in kSearch\n");
+            // atomicExch(abort_flag, 1);
+            if (lane_id == 0) abort_flag[0] = 1;
+            size[0] = sz;
+            state[sz-1] = 4;
+            if (warp_id == 4148 && lane_id == 0) printf("%d is returning with sz: %d, state:%d, res: %d, br:%d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", warp_id, sz, state[sz-1], res[sz-1], br[sz-1],PlexSz[0], Cand1Sz[0], Cand2Sz[0], ExclSz[0]);
+            return;
+          }
+        }
+        if (lane_id == 0) abort_flag[0] = 0;
+          for (int i = 0; i < length[0]; i++)
+          {
+            if (lane_id == 0) Cand1Sz[0]++;
+            __syncwarp();
+            const int v = cand1[Cand1Sz[0]-1];
+            addG(lane_id, v, neiInGBase, n, neighborsBase, offsetsBase, degreeBase);
+          }
+          continue;
+        }
+        else
+        {
+          if (lane_id == 0)
+          {
+            state[sz-1] = 5;
+          }
+          __syncwarp();
+          continue;
+        }
+      case 5:
+      // printf("state: %d, size: %d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", state[sz-1], sz, sh_PlexSz[local_warp_id], sh_Cand1Sz[local_warp_id], sh_Cand2Sz[local_warp_id], sh_ExclSz[local_warp_id]);
+        for (int i = br[sz-1]; i >= 1; i--)
+        {
+          unsigned int node = plex[PlexSz[0]-1];
+          if (lane_id == 0)
+          {
+            cand2[Cand2Sz[0]++] = plex[--PlexSz[0]];
+          }
+          __syncwarp();
+          for (int j = lane_id; j < degreeBase[node]; j+=32)
+          {
+            const int nei = neighborsBase[offsetsBase[node]+j];
+            neiInPBase[nei]--;
+          }
+          subG(lane_id, node, neiInGBase, n, neighborsBase, offsetsBase, degreeBase);
+          __syncwarp();
+        }
+        
+        recoverCand12(lane_id, cand1, recCand1Base, neiInGBase, sz, n, &Cand1Sz[0], neighborsBase, degreeBase, offsetsBase);
+        
+        recoverCand23(lane_id, n, cand2, recCand2Base, sz, &Cand2Sz[0]);
+        __syncwarp();
+        
+        sz--;
+        continue;
+    }
+  }
+}
+
+__global__ void kSearch2(int idx, P_pointers p, S_pointers s, G_pointers g, T_pointers t, unsigned int* d_blk_counter, unsigned int* d_res, unsigned int* d_br, unsigned int* d_state, unsigned int* d_len, unsigned int* d_sz, uint16_t* neiInG, uint16_t* neiInP, unsigned int* plex_count, uint8_t* commonMtx, unsigned int* recCand1, unsigned int* recCand2, unsigned int* d_v2delete, uint32_t* d_adj, unsigned long long* cycles, int* abort_flag)
+{
+  unsigned int global_index = blockIdx.x * blockDim.x + threadIdx.x;
+  unsigned int warp_id = (global_index / 32);
+  unsigned int lane_id = threadIdx.x % 32;
+  unsigned int local_warp_id = threadIdx.x >> 5;
+
+  // if (warp_id >= 2272) return;
+
+  if ((warp_id+WARPS*idx) >= (g.n-p.lb+2)) return;
+
+  // if (warp_id+WARPS*idx != 4111) return;
+
+  int k = p.k;
+  int q = p.lb;
+
+  unsigned int* counterBase = d_blk_counter + warp_id;
+
+  if (counterBase[0] < q) return;
+  
+
+  unsigned int* degreeBase = s.degree + warp_id * MAX_BLK_SIZE;
+  unsigned int* offsetsBase = s.offsets + warp_id * MAX_BLK_SIZE;
+  unsigned int* neighborsBase = s.neighbors + warp_id * MAX_BLK_SIZE * AVG_DEGREE;
+  unsigned int* degreeHop = s.degreeHop + warp_id * MAX_BLK_SIZE;
+
+  unsigned int* plex = s.P + warp_id * MAX_BLK_SIZE;
+  unsigned int* cand1 = s.C + warp_id * MAX_BLK_SIZE;
+  unsigned int* cand2 = s.C2 + warp_id * MAX_BLK_SIZE;
+  unsigned int* excl = s.X + warp_id * MAX_BLK_SIZE;
+
+  unsigned int* PlexSz = s.PSize + warp_id;
+  unsigned int* Cand1Sz = s.CSize + warp_id;
+  unsigned int* Cand2Sz = s.C2Size + warp_id;
+  unsigned int* ExclSz = s.XSize + warp_id;
+  
+  unsigned int* res = d_res + warp_id * MAX_DEPTH;
+  unsigned int* br = d_br + warp_id * MAX_DEPTH;
+  unsigned int* state = d_state + warp_id * MAX_DEPTH;
+  unsigned int* v2delete = d_v2delete + warp_id * MAX_DEPTH;
+  unsigned int* length = d_len + warp_id;
+  unsigned int* size = d_sz + warp_id;
+
+  uint16_t* neiInGBase = neiInG + warp_id * MAX_BLK_SIZE;
+  uint16_t* neiInPBase = neiInP + warp_id * MAX_BLK_SIZE;
+
+  unsigned int* recCand1Base = recCand1 + warp_id * MAX_BLK_SIZE;
+  unsigned int* recCand2Base = recCand2 + warp_id * MAX_BLK_SIZE;
+
+  t.d_tail_A[0] = 0;
+
+  // uint8_t* commonMtxBase = commonMtx + warp_id * CAP;
+  size_t capacity = size_t(warp_id) * CAP;
+  uint8_t* commonMtxBase = commonMtx + capacity;
+
+  uint32_t *adjList = d_adj + ADJSIZE * warp_id;
+
+  int n;
+  if (lane_id == 0)
+  {
+    n = counterBase[0];
+  }
+  n = __shfl_sync(0xFFFFFFFF, n, 0);
+
+  __shared__ unsigned int sh_PlexSz[WARPS_EACH_BLK];
+  __shared__ unsigned int sh_Cand1Sz[WARPS_EACH_BLK];
+  __shared__ unsigned int sh_Cand2Sz[WARPS_EACH_BLK];
+  __shared__ unsigned int sh_ExclSz[WARPS_EACH_BLK];
+
+  if (lane_id == 0) sh_PlexSz[local_warp_id] = PlexSz[0]; 
+  if (lane_id == 0) sh_Cand1Sz[local_warp_id] = Cand1Sz[0];
+  if (lane_id == 0) sh_Cand2Sz[local_warp_id] = Cand2Sz[0];
+  if (lane_id == 0) sh_ExclSz[local_warp_id] = ExclSz[0];
+
+  for (int i = lane_id; i < n; i+=32)
+  {
+    neiInGBase[i] = degreeHop[i];
+    neiInPBase[i] = 0;
+  }
+  
+  
+  __syncwarp();
+  for (int i = lane_id; i < degreeBase[0]; i+=32)
+  {
+    const int nei = neighborsBase[offsetsBase[0]+i];
+    neiInPBase[nei]++;
+  }
+
+  int flag = abort_flag[0];
+  if(lane_id == 0) abort_flag[0] = 0;
+  int sz;
+  if (!flag)
+  {
+    sz = 0;
+    res[sz] = k - 1;
+    br[sz] = 1;
+    state[sz] = 0;
+    sz++;
+  }
+  else 
+  {
+    sz = size[0];
+    if (sz == 0) return;
+    if (lane_id == 0) printf("sz: %d, warp_id: %d, res: %d, br: %d, state: %d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", sz, warp_id, res[sz-1], br[sz-1], state[sz-1],sh_PlexSz[local_warp_id], sh_Cand1Sz[local_warp_id], sh_Cand2Sz[local_warp_id], sh_ExclSz[local_warp_id]);
+  }
+  
+  int u, found_idx;
+  
+  while(sz)
+  {
+    if (sz >= MAX_DEPTH)
+    {
+      if (lane_id == 0) printf("capacity crossed: %d\n", sz);
+      break;
+    }
+    switch(state[sz-1])
+    {
+      //reserve my slot, slot -> []
       case 0:
         // printf("state: %d, size: %d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", state[sz-1], sz, sh_PlexSz[local_warp_id], sh_Cand1Sz[local_warp_id], sh_Cand2Sz[local_warp_id], sh_ExclSz[local_warp_id]);
         if (sh_Cand2Sz[local_warp_id] == 0)
         {
+          if (!flag)
+          {
           if (sh_PlexSz[local_warp_id] + sh_Cand1Sz[local_warp_id] < q)
           {
             sz--;
@@ -1972,17 +2574,15 @@ __global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_poi
           int pos;
           if (lane_id == 0)
           {
+            // printf("Appending a new task, warp_id: %d\n", warp_id);
             unsigned int* tail = t.d_tail_A;
             pos = atomicAdd(&tail[0], 1u);
+            // printf("position: %d, warp_id: %d\n", pos, warp_id);
           }
           pos = __shfl_sync(0xFFFFFFFF, pos, 0);
           // if (lane_id == 0) printf("pos: %d, max_cap: %d\n", pos, MAX_CAP);
-          if (pos+1 > (MAX_CAP/2)-1000)
-          {
-            // if(lane_id == 0) printf("Maximum Capacity Reached in kSearch\n");
-            atomicExch(abort_flag, 1);
-            return;
-          }
+          
+
           uint8_t* newLabels = t.d_all_labels_A + pos * MAX_BLK_SIZE;
           uint16_t* newNeiInG = t.d_all_neiInG_A + pos * MAX_BLK_SIZE;
           uint16_t* newNeiInP = t.d_all_neiInP_A + pos * MAX_BLK_SIZE;
@@ -2012,6 +2612,9 @@ __global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_poi
             const int v = excl[i];
             newLabels[v] = X;
           }
+
+          
+          __syncwarp();
           if (lane_id == 0)
           {
             Task &nt = t.d_tasks_A[pos];
@@ -2022,13 +2625,35 @@ __global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_poi
             nt.labels = newLabels;
             nt.neiInG = newNeiInG;
             nt.neiInP = newNeiInP;
-          }
-          __syncwarp();
           
+          // __syncwarp();
+          // if (warp_id == 0)
+          // {
+          //   // printf("idx: %d\n", t.idx);
+          //   // if (t.idx == 0) return;
+          //   // printf("Labels1: %d\n", newLabels[0]);
+          //   for (int j = 0; j < MAX_BLK_SIZE; j++)
+          //   {
+          //     printf("%d ", nt.labels[j]);
+          //   }
+          //   printf("\n");
+          // }
+        }
+        __syncwarp();
+        if (pos+1 > (MAX_CAP/8)-WARPS)
+        {
+          // if(lane_id == 0) printf("Maximum Capacity Reached in kSearch\n");
+          // atomicExch(abort_flag, 1);
+          if (lane_id == 0) abort_flag[0] = 1;
+          size[0] = sz;
+          return;
+        }
+      }
+          if (lane_id == 0) flag = 0;
           sz--;
           continue;
         }
-       
+        
         if (lane_id == 0)
         {
           u = cand2[sh_Cand2Sz[local_warp_id]-1];
@@ -2185,9 +2810,12 @@ __global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_poi
         __syncwarp();
         continue;
       case 4:
-      // printf("state: %d, size: %d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", state[sz-1], sz, sh_PlexSz[local_warp_id], sh_Cand1Sz[local_warp_id], sh_Cand2Sz[local_warp_id], sh_ExclSz[local_warp_id]);
-        if (br[sz-1] == res[sz-1])
-        {
+      // printf("state: %d, size: %d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", state[sz-1], sz, sh_PlexSz[local_warp_id], sh_Cand1Sz[local_warp_id], sh_Cand2Sz[local_warp_id], sh_ExclSz[local_warp_id]); 
+      if (br[sz-1] == res[sz-1])
+      {
+        // if (lane_id == 0) printf("abort flag: %d\n", abort_flag[0]);
+        if (!flag)
+        { 
           if (lane_id == 0)
           {
             u = cand2[--sh_Cand2Sz[local_warp_id]];
@@ -2242,23 +2870,20 @@ __global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_poi
             }
           }
           len = __shfl_sync(0xFFFFFFFF, len, 0);
-        
+          if (lane_id == 0) length[0] = len;
           
           int pos;
           if (lane_id == 0)
           {
+            // printf("Appending a new task, warp_id: %d\n", warp_id);
             unsigned int* tail = t.d_tail_A;
             pos = atomicAdd(&tail[0], 1u);
+            // printf("position: %d, warp_id: %d\n", pos, warp_id);
             state[sz-1] = 5;
           }
           pos = __shfl_sync(0xFFFFFFFF, pos, 0);
           // if (lane_id == 0) printf("pos: %d, max_cap: %d\n", pos, MAX_CAP);
-          if (pos+1 > (MAX_CAP/2)-WARPS)
-          {
-            // if(lane_id == 0) printf("Maximum Capacity Reached in kSearch\n");
-            atomicExch(abort_flag, 1);
-            return;
-          }
+          
           size_t baseOff = (size_t)pos * (size_t)MAX_BLK_SIZE;
           uint8_t* newLabels = t.d_all_labels_A + baseOff;
           uint16_t* newNeiInG = t.d_all_neiInG_A + baseOff;
@@ -2291,6 +2916,17 @@ __global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_poi
             newLabels[v] = X;
           }
           __syncwarp();
+          // if (warp_id == 0 && lane_id == 0)
+          // {
+          //   // printf("idx: %d\n", t.idx);
+          //   // if (t.idx == 0) return;
+          //   printf("Labels2: %d\n", newLabels[0]);
+          //   // for (int j = 0; j < MAX_BLK_SIZE; j++)
+          //   // {
+          //   //   printf("%d ", newLabels[j]);
+          //   // }
+          //   // printf("\n");
+          // }
           if (lane_id == 0)
           {
             Task &nt = t.d_tasks_A[pos];
@@ -2303,8 +2939,19 @@ __global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_poi
             nt.neiInP = newNeiInP;
           }
           __syncwarp();
-          
-          for (int i = 0; i < len; i++)
+
+          if (pos+1 > (MAX_CAP/8)-WARPS)
+          {
+            // if(lane_id == 0) printf("Maximum Capacity Reached in kSearch\n");
+            // atomicExch(abort_flag, 1);
+            if (lane_id == 0) abort_flag[0] = 1;
+            size[0] = sz;
+            state[sz-1] = 4;
+            return;
+          }
+        }
+        if (lane_id == 0) flag = 0;
+          for (int i = 0; i < length[0]; i++)
           {
             if (lane_id == 0) sh_Cand1Sz[local_warp_id]++;
             __syncwarp();

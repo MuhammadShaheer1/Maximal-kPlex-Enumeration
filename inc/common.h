@@ -8,10 +8,10 @@
 #define MAX_BLK_SIZE 1024
 #define AVG_DEGREE 200
 #define AVG_LEFT_DEGREE 200
-#define MAX_CAP 2048 * 2048
-#define SMALL_CAP 512 * 512
+#define MAX_CAP 2048 * 2048 
+#define SMALL_CAP 512 * 512 * 2
 #define K_LIMIT 10
-#define MAX_DEPTH 1000
+#define MAX_DEPTH 250
 #define CAP MAX_BLK_SIZE * MAX_BLK_SIZE
 #define ADJSIZE ((MAX_BLK_SIZE * MAX_BLK_SIZE) / 32)
 using namespace std;
@@ -78,6 +78,9 @@ typedef struct S_pointers{
     unsigned int* CSize;
     unsigned int* C2Size;
     unsigned int* XSize;
+    unsigned int* PB;
+    unsigned int* CB;
+    unsigned int* XB;
 } S_pointers;
 
 typedef struct H_pointers{
@@ -141,7 +144,7 @@ struct Task{
     unsigned int PlexSz;
     unsigned int CandSz;
     unsigned int ExclSz;
-    uint8_t* labels;
+    uint8_t* labels; // labels = [P, C ,X ,C, C]
     uint16_t* neiInG;
     uint16_t* neiInP;
 
