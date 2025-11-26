@@ -11,9 +11,10 @@
 #define MAX_CAP 2048 * 2048 
 #define SMALL_CAP 512 * 512 * 2
 #define K_LIMIT 10
-#define MAX_DEPTH 250
+#define MAX_DEPTH 1000
 #define CAP MAX_BLK_SIZE * MAX_BLK_SIZE
 #define ADJSIZE ((MAX_BLK_SIZE * MAX_BLK_SIZE) / 32)
+#define STAGING_CHUNK 4096
 using namespace std;
 
 enum : uint8_t{
@@ -165,6 +166,23 @@ struct Task{
          , neiInG(neiInG_)
          , neiInP(neiInP_)
     {}
+};
+
+struct HostTask{
+    int idx;
+    unsigned int PlexSz;
+    unsigned int CandSz;
+    unsigned int ExclSz;
+
+    uint8_t labels[MAX_BLK_SIZE];
+    uint16_t neiInG[MAX_BLK_SIZE];
+    uint16_t neiInP[MAX_BLK_SIZE];
+};
+
+struct HostTaskBuffer{
+    HostTask *tasks;
+    unsigned int capacity;
+    unsigned int size;
 };
 
 struct Frame{
