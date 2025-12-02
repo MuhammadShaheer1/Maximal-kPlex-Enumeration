@@ -14,7 +14,7 @@
 #define MAX_DEPTH 1000
 #define CAP MAX_BLK_SIZE * MAX_BLK_SIZE
 #define ADJSIZE ((MAX_BLK_SIZE * MAX_BLK_SIZE) / 32)
-#define STAGING_CHUNK 4096
+#define STAGING_CHUNK 1024*1024
 using namespace std;
 
 enum : uint8_t{
