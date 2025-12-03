@@ -261,7 +261,7 @@ void initializeBNB(int initialN, T_pointers &task_pointers, P_pointers plex_poin
         // unsigned int plex;
         cudaMemcpy(&tail, task_pointers.d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
         // cudaMemcpy(&plex, plex_count, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-        printf("tail: %u, iteration: %d, hostSize: %u\n", tail, initialN, hostBuf.size);
+        // printf("tail: %u, iteration: %d, hostSize: %u\n", tail, initialN, hostBuf.size);
         if (tail == 0)
             break;
 
@@ -312,10 +312,10 @@ void initializeBNB(int initialN, T_pointers &task_pointers, P_pointers plex_poin
                 // printf("tail: %d, capacity: %u\n", tail, MAX_CAP/4);
                 if (h_abort)
                 {
-                    printf("Maximum Capacity Reached on level %d\n", initialN);
-                    printf("Copying Some Tasks To Host Memory with size: %u\n", hostBuf.size);
-                    spillToHost(task_pointers, task_pointers.d_tail_A, hostBuf);
-                    cudaMemset(d_abort, 0, sizeof(int));
+                    // printf("Maximum Capacity Reached on level %d\n", initialN);
+                    // printf("Copying Some Tasks To Host Memory with size: %u\n", hostBuf.size);
+                    // spillToHost(task_pointers, task_pointers.d_tail_A, hostBuf);
+                    // cudaMemset(d_abort, 0, sizeof(int));
                 }
             }
             cudaDeviceSynchronize();

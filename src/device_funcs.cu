@@ -459,7 +459,7 @@ __global__ void fillNeighbors(int i, S_pointers s, P_pointers p, G_pointers g, u
   ExclSz[0] = 0;
   PlexSz[0] = 1;
 
-  if (value == 4111 && lane_id == 0)
+  if (value == 6 && lane_id == 0)
   {
     // printf("Blks: ");
     // for (int i = 0; i < counterBase[0]; i++)
@@ -3033,6 +3033,8 @@ __global__ void kSearch3(int idx, P_pointers p, S_pointers s, G_pointers g, T_po
   unsigned int lane_id = threadIdx.x % 32;
   unsigned int local_warp_id = threadIdx.x >> 5; 
 
+  if (warp_id != 6) return;
+
   if ((warp_id+WARPS*idx) >= (g.n-p.lb+2)) return;
 
   // if (warp_id+WARPS*idx != 4111) return;
@@ -3163,7 +3165,7 @@ __global__ void kSearch3(int idx, P_pointers p, S_pointers s, G_pointers g, T_po
   // }
   
   int u, found_idx;
-  
+  int count = 0;
   while(sz)
   {
     if (sz >= MAX_DEPTH)
@@ -3171,11 +3173,41 @@ __global__ void kSearch3(int idx, P_pointers p, S_pointers s, G_pointers g, T_po
       if (lane_id == 0) printf("capacity crossed: %d\n", sz);
       break;
     }
+    // count = count + 1;
+    // if (count > 00) return;
     switch(state[sz-1])
     {
       //reserve my slot, slot -> []
       case 0:
-        // printf("state: %d, size: %d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", state[sz-1], sz, sh_PlexSz[local_warp_id], sh_Cand1Sz[local_warp_id], sh_Cand2Sz[local_warp_id], sh_ExclSz[local_warp_id]);
+        if (lane_id == 0) 
+        {
+        printf("state: %d, size: %d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", state[sz-1], sz, PlexSz[0], Cand1Sz[0], Cand2Sz[0], ExclSz[0]);
+        printf("plex: ");
+        for (int i = 0 ; i < PlexSz[0]; i++)
+        {
+          printf("%d ", plex[i]);
+        }
+        printf("\n");
+        printf("cand1: ");
+        for (int i = 0 ; i < Cand1Sz[0]; i++)
+        {
+          printf("%d ", cand1[i]);
+        }
+        printf("\n");
+        printf("cand2: ");
+        for (int i = 0 ; i < Cand2Sz[0]; i++)
+        {
+          printf("%d ", cand2[i]);
+        }
+        printf("\n");
+        printf("excl: ");
+        for (int i = 0 ; i < ExclSz[0]; i++)
+        {
+          printf("%d ", excl[i]);
+        }
+        printf("\n");
+        printf("\n");
+        }
         if (Cand2Sz[0] == 0)
         {
           // if (!flag)
@@ -3307,7 +3339,35 @@ __global__ void kSearch3(int idx, P_pointers p, S_pointers s, G_pointers g, T_po
         continue;
 
       case 1:
-      // printf("state: %d, size: %d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", state[sz-1], sz, sh_PlexSz[local_warp_id], sh_Cand1Sz[local_warp_id], sh_Cand2Sz[local_warp_id], sh_ExclSz[local_warp_id]);      
+        if (lane_id == 0) 
+        {
+        printf("state: %d, size: %d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", state[sz-1], sz, PlexSz[0], Cand1Sz[0], Cand2Sz[0], ExclSz[0]);
+        printf("plex: ");
+        for (int i = 0 ; i < PlexSz[0]; i++)
+        {
+          printf("%d ", plex[i]);
+        }
+        printf("\n");
+        printf("cand1: ");
+        for (int i = 0 ; i < Cand1Sz[0]; i++)
+        {
+          printf("%d ", cand1[i]);
+        }
+        printf("\n");
+        printf("cand2: ");
+        for (int i = 0 ; i < Cand2Sz[0]; i++)
+        {
+          printf("%d ", cand2[i]);
+        }
+        printf("\n");
+        printf("excl: ");
+        for (int i = 0 ; i < ExclSz[0]; i++)
+        {
+          printf("%d ", excl[i]);
+        }
+        printf("\n");
+        printf("\n");
+        }
         if(lane_id == 0)
         {
           state[sz-1] = 2;
@@ -3344,7 +3404,35 @@ __global__ void kSearch3(int idx, P_pointers p, S_pointers s, G_pointers g, T_po
         
         continue;
       case 2:
-      // printf("state: %d, size: %d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", state[sz-1], sz, sh_PlexSz[local_warp_id], sh_Cand1Sz[local_warp_id], sh_Cand2Sz[local_warp_id], sh_ExclSz[local_warp_id]);
+      if (lane_id == 0) 
+        {
+        printf("state: %d, size: %d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", state[sz-1], sz, PlexSz[0], Cand1Sz[0], Cand2Sz[0], ExclSz[0]);
+        printf("plex: ");
+        for (int i = 0 ; i < PlexSz[0]; i++)
+        {
+          printf("%d ", plex[i]);
+        }
+        printf("\n");
+        printf("cand1: ");
+        for (int i = 0 ; i < Cand1Sz[0]; i++)
+        {
+          printf("%d ", cand1[i]);
+        }
+        printf("\n");
+        printf("cand2: ");
+        for (int i = 0 ; i < Cand2Sz[0]; i++)
+        {
+          printf("%d ", cand2[i]);
+        }
+        printf("\n");
+        printf("excl: ");
+        for (int i = 0 ; i < ExclSz[0]; i++)
+        {
+          printf("%d ", excl[i]);
+        }
+        printf("\n");
+        printf("\n");
+        }
         if (br[sz-1] < res[sz-1])
         {
           if (lane_id == 0)
@@ -3408,7 +3496,35 @@ __global__ void kSearch3(int idx, P_pointers p, S_pointers s, G_pointers g, T_po
           continue;
         }
       case 3:
-      // printf("state: %d, size: %d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", state[sz-1], sz, sh_PlexSz[local_warp_id], sh_Cand1Sz[local_warp_id], sh_Cand2Sz[local_warp_id], sh_ExclSz[local_warp_id]);
+      if (lane_id == 0) 
+        {
+        printf("state: %d, size: %d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", state[sz-1], sz, PlexSz[0], Cand1Sz[0], Cand2Sz[0], ExclSz[0]);
+        printf("plex: ");
+        for (int i = 0 ; i < PlexSz[0]; i++)
+        {
+          printf("%d ", plex[i]);
+        }
+        printf("\n");
+        printf("cand1: ");
+        for (int i = 0 ; i < Cand1Sz[0]; i++)
+        {
+          printf("%d ", cand1[i]);
+        }
+        printf("\n");
+        printf("cand2: ");
+        for (int i = 0 ; i < Cand2Sz[0]; i++)
+        {
+          printf("%d ", cand2[i]);
+        }
+        printf("\n");
+        printf("excl: ");
+        for (int i = 0 ; i < ExclSz[0]; i++)
+        {
+          printf("%d ", excl[i]);
+        }
+        printf("\n");
+        printf("\n");
+        }
         if (lane_id == 0)
         {
           br[sz-1]++;
@@ -3444,7 +3560,35 @@ __global__ void kSearch3(int idx, P_pointers p, S_pointers s, G_pointers g, T_po
         __syncwarp();
         continue;
       case 4:
-      // printf("state: %d, size: %d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", state[sz-1], sz, sh_PlexSz[local_warp_id], sh_Cand1Sz[local_warp_id], sh_Cand2Sz[local_warp_id], sh_ExclSz[local_warp_id]); 
+      if (lane_id == 0) 
+        {
+        printf("state: %d, size: %d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", state[sz-1], sz, PlexSz[0], Cand1Sz[0], Cand2Sz[0], ExclSz[0]);
+        printf("plex: ");
+        for (int i = 0 ; i < PlexSz[0]; i++)
+        {
+          printf("%d ", plex[i]);
+        }
+        printf("\n");
+        printf("cand1: ");
+        for (int i = 0 ; i < Cand1Sz[0]; i++)
+        {
+          printf("%d ", cand1[i]);
+        }
+        printf("\n");
+        printf("cand2: ");
+        for (int i = 0 ; i < Cand2Sz[0]; i++)
+        {
+          printf("%d ", cand2[i]);
+        }
+        printf("\n");
+        printf("excl: ");
+        for (int i = 0 ; i < ExclSz[0]; i++)
+        {
+          printf("%d ", excl[i]);
+        }
+        printf("\n");
+        printf("\n");
+        }
       if (br[sz-1] == res[sz-1])
       {
       //   if (!flag)
@@ -3599,7 +3743,35 @@ __global__ void kSearch3(int idx, P_pointers p, S_pointers s, G_pointers g, T_po
           continue;
         }
       case 5:
-      // printf("state: %d, size: %d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", state[sz-1], sz, sh_PlexSz[local_warp_id], sh_Cand1Sz[local_warp_id], sh_Cand2Sz[local_warp_id], sh_ExclSz[local_warp_id]);
+      if (lane_id == 0) 
+        {
+        printf("state: %d, size: %d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", state[sz-1], sz, PlexSz[0], Cand1Sz[0], Cand2Sz[0], ExclSz[0]);
+        printf("plex: ");
+        for (int i = 0 ; i < PlexSz[0]; i++)
+        {
+          printf("%d ", plex[i]);
+        }
+        printf("\n");
+        printf("cand1: ");
+        for (int i = 0 ; i < Cand1Sz[0]; i++)
+        {
+          printf("%d ", cand1[i]);
+        }
+        printf("\n");
+        printf("cand2: ");
+        for (int i = 0 ; i < Cand2Sz[0]; i++)
+        {
+          printf("%d ", cand2[i]);
+        }
+        printf("\n");
+        printf("excl: ");
+        for (int i = 0 ; i < ExclSz[0]; i++)
+        {
+          printf("%d ", excl[i]);
+        }
+        printf("\n");
+        printf("\n");
+        }
         for (int i = br[sz-1]; i >= 1; i--)
         {
           unsigned int node = plex[PlexSz[0]-1];
@@ -3626,6 +3798,35 @@ __global__ void kSearch3(int idx, P_pointers p, S_pointers s, G_pointers g, T_po
         continue;
       
       case 6:
+      if (lane_id == 0) 
+        {
+        printf("state: %d, size: %d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", state[sz-1], sz, PlexSz[0], Cand1Sz[0], Cand2Sz[0], ExclSz[0]);
+        printf("plex: ");
+        for (int i = 0 ; i < PlexSz[0]; i++)
+        {
+          printf("%d ", plex[i]);
+        }
+        printf("\n");
+        printf("cand1: ");
+        for (int i = 0 ; i < Cand1Sz[0]; i++)
+        {
+          printf("%d ", cand1[i]);
+        }
+        printf("\n");
+        printf("cand2: ");
+        for (int i = 0 ; i < Cand2Sz[0]; i++)
+        {
+          printf("%d ", cand2[i]);
+        }
+        printf("\n");
+        printf("excl: ");
+        for (int i = 0 ; i < ExclSz[0]; i++)
+        {
+          printf("%d ", excl[i]);
+        }
+        printf("\n");
+        printf("\n");
+        }
         for (int i = 0; i < length[0]; i++)
           {
             if (lane_id == 0) Cand1Sz[0]++;
@@ -3637,6 +3838,35 @@ __global__ void kSearch3(int idx, P_pointers p, S_pointers s, G_pointers g, T_po
           __syncwarp();
           continue;
       case 7:
+      if (lane_id == 0) 
+        {
+        printf("state: %d, size: %d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", state[sz-1], sz, PlexSz[0], Cand1Sz[0], Cand2Sz[0], ExclSz[0]);
+        printf("plex: ");
+        for (int i = 0 ; i < PlexSz[0]; i++)
+        {
+          printf("%d ", plex[i]);
+        }
+        printf("\n");
+        printf("cand1: ");
+        for (int i = 0 ; i < Cand1Sz[0]; i++)
+        {
+          printf("%d ", cand1[i]);
+        }
+        printf("\n");
+        printf("cand2: ");
+        for (int i = 0 ; i < Cand2Sz[0]; i++)
+        {
+          printf("%d ", cand2[i]);
+        }
+        printf("\n");
+        printf("excl: ");
+        for (int i = 0 ; i < ExclSz[0]; i++)
+        {
+          printf("%d ", excl[i]);
+        }
+        printf("\n");
+        printf("\n");
+        }
           // if (lane_id == 0) printf("Hello from list branch\n");
           if (PlexSz[0] + Cand1Sz[0] < q)
           {
@@ -3685,6 +3915,7 @@ __global__ void kSearch3(int idx, P_pointers p, S_pointers s, G_pointers g, T_po
           pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
 
           int pivot_plex = pivot;
+          
           if (minnei_Plex + k < max(q, PlexSz[0]))
           {
             sz--;
@@ -3725,7 +3956,12 @@ __global__ void kSearch3(int idx, P_pointers p, S_pointers s, G_pointers g, T_po
             }
             minnei_Cand = __shfl_sync(0xFFFFFFFF, minnei_Cand, 0);
             pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
-
+            // if (lane_id == 0) printf("pivot: %d\n", pivot);
+            // if (lane_id == 0) printf("pivot plex: %d\n", pivot_plex);
+            if (pivot == -1)
+            {
+              pivot = cand1[Cand1Sz[0]-1];
+            }
             state[sz-1] = 8;
             continue; 
           }
@@ -3789,11 +4025,192 @@ __global__ void kSearch3(int idx, P_pointers p, S_pointers s, G_pointers g, T_po
             sz--;
             continue;
           }
-
           state[sz-1] = 8;
           continue;
       case 8:
-          // if (lane_id == 0) printf("Hello from BranchInCand\n");
+      if (lane_id == 0) 
+        {
+        printf("state: %d, size: %d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", state[sz-1], sz, PlexSz[0], Cand1Sz[0], Cand2Sz[0], ExclSz[0]);
+        printf("plex: ");
+        for (int i = 0 ; i < PlexSz[0]; i++)
+        {
+          printf("%d ", plex[i]);
+        }
+        printf("\n");
+        printf("cand1: ");
+        for (int i = 0 ; i < Cand1Sz[0]; i++)
+        {
+          printf("%d ", cand1[i]);
+        }
+        printf("\n");
+        printf("cand2: ");
+        for (int i = 0 ; i < Cand2Sz[0]; i++)
+        {
+          printf("%d ", cand2[i]);
+        }
+        printf("\n");
+        printf("excl: ");
+        for (int i = 0 ; i < ExclSz[0]; i++)
+        {
+          printf("%d ", excl[i]);
+        }
+        printf("\n");
+        printf("\n");
+        }
+          if (lane_id == 0)
+          {
+            excl[ExclSz[0]++] = pivot;
+            for (int i = 0; i < Cand1Sz[0]; i++)
+            {
+              if (cand1[i] == pivot)
+              {
+                int temp = cand1[i];
+                cand1[i] = cand1[Cand1Sz[0]-1];
+                cand1[Cand1Sz[0]-1] = temp;
+                Cand1Sz[0]--;
+                break;
+              }
+            }
+          }
+          subG(lane_id, pivot, neiInGBase, n, neighborsBase, offsetsBase, degreeBase);
+          state[sz-1] = 9;
+          state[sz] = 7;
+          sz++;
+          continue;
+      case 9:
+      if (lane_id == 0) 
+        {
+        printf("state: %d, size: %d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", state[sz-1], sz, PlexSz[0], Cand1Sz[0], Cand2Sz[0], ExclSz[0]);
+        printf("plex: ");
+        for (int i = 0 ; i < PlexSz[0]; i++)
+        {
+          printf("%d ", plex[i]);
+        }
+        printf("\n");
+        printf("cand1: ");
+        for (int i = 0 ; i < Cand1Sz[0]; i++)
+        {
+          printf("%d ", cand1[i]);
+        }
+        printf("\n");
+        printf("cand2: ");
+        for (int i = 0 ; i < Cand2Sz[0]; i++)
+        {
+          printf("%d ", cand2[i]);
+        }
+        printf("\n");
+        printf("excl: ");
+        for (int i = 0 ; i < ExclSz[0]; i++)
+        {
+          printf("%d ", excl[i]);
+        }
+        printf("\n");
+        printf("\n");
+        }
+          if (lane_id == 0)
+          {
+          cand1[Cand1Sz[0]++] = excl[--ExclSz[0]];
+          }
+          pivot = cand1[Cand1Sz[0]-1];
+          addG(lane_id, pivot, neiInGBase, n, neighborsBase, offsetsBase, degreeBase);
+
+          if (lane_id == 0)
+          {
+            plex[PlexSz[0]++] = pivot;
+            for (int i = 0; i < Cand1Sz[0]; i++)
+            {
+              if (cand1[i] == pivot)
+              {
+                int temp = cand1[i];
+                cand1[i] = cand1[Cand1Sz[0]-1];
+                cand1[Cand1Sz[0]-1] = temp;
+                Cand1Sz[0]--;
+                break;
+              }
+            }
+          }
+          for (int j = lane_id; j < degreeBase[pivot]; j+=32)
+          {
+            const int nei = neighborsBase[offsetsBase[pivot]+j];
+            neiInPBase[nei]++;
+          }
+          // updateCand13(lane_id, cand1, commonMtxBase, recCand1Base, neiInGBase, sz, n, pivot, &Cand1Sz[0], neighborsBase, degreeBase, offsetsBase);
+          // int len = 0;
+          // for (int i = 0; i < Cand1Sz[0]; i++)
+          // {
+          //   const int v = cand1[i];
+          //   if (!isKplex2(lane_id, v, k, PlexSz[0], neiInPBase, plex, n, neighborsBase, offsetsBase, degreeBase, adjList))
+          //   {
+          //     if (lane_id == 0)
+          //     {
+          //       int temp = cand1[Cand1Sz[0]-1];
+          //       cand1[Cand1Sz[0]-1] = cand1[i];
+          //       cand1[i] = temp;
+          //       Cand1Sz[0]--;
+          //       len++;
+          //     }
+          //     __syncwarp();
+          //     subG(lane_id, v, neiInGBase, n, neighborsBase, offsetsBase, degreeBase);
+          //     i--;
+          //   }
+          // }
+          // len = __shfl_sync(0xFFFFFFFF, len, 0);
+          // if (lane_id == 0) v2delete[sz-1] = len;
+          if (upperBound2(lane_id, k, q, plex, neiInGBase, PlexSz[0]))
+          {
+            state[sz-1] = 10;
+            state[sz] = 7;
+            sz++;
+            continue;
+          }
+          state[sz-1] = 10;
+          continue;
+      case 10:
+      if (lane_id == 0) 
+        {
+        printf("state: %d, size: %d, plexsz: %d, cand1sz: %d, cand2sz: %d, exclsz: %d\n", state[sz-1], sz, PlexSz[0], Cand1Sz[0], Cand2Sz[0], ExclSz[0]);
+        printf("plex: ");
+        for (int i = 0 ; i < PlexSz[0]; i++)
+        {
+          printf("%d ", plex[i]);
+        }
+        printf("\n");
+        printf("cand1: ");
+        for (int i = 0 ; i < Cand1Sz[0]; i++)
+        {
+          printf("%d ", cand1[i]);
+        }
+        printf("\n");
+        printf("cand2: ");
+        for (int i = 0 ; i < Cand2Sz[0]; i++)
+        {
+          printf("%d ", cand2[i]);
+        }
+        printf("\n");
+        printf("excl: ");
+        for (int i = 0 ; i < ExclSz[0]; i++)
+        {
+          printf("%d ", excl[i]);
+        }
+        printf("\n");
+        printf("\n");
+        }
+          // for (int i = 0; i < v2delete[sz-1]; i++)
+          // {
+          //   if (lane_id == 0) Cand1Sz[0]++;
+          //   __syncwarp();
+          //   const int v = cand1[Cand1Sz[0]-1];
+          //   addG(lane_id, v, neiInGBase, n, neighborsBase, offsetsBase, degreeBase);
+          // }
+          if (lane_id == 0) cand1[Cand1Sz[0]++] = plex[--PlexSz[0]];
+          pivot = cand1[Cand1Sz[0]-1];
+          for (int j = lane_id; j < degreeBase[pivot]; j+=32)
+          {
+            const int nei = neighborsBase[offsetsBase[pivot]+j];
+            neiInPBase[nei]--;
+          }
+          // recoverCand12(lane_id, cand1, recCand1Base, neiInGBase, sz, n, &Cand1Sz[0], neighborsBase, degreeBase, offsetsBase);
+          
           sz--;
           continue;
     }
