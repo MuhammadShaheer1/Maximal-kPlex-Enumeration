@@ -312,10 +312,92 @@ void initializeBNB(int initialN, T_pointers &task_pointers, P_pointers plex_poin
                 // printf("tail: %d, capacity: %u\n", tail, MAX_CAP/4);
                 if (h_abort)
                 {
-                    printf("Maximum Capacity Reached on level %d\n", initialN);
-                    printf("Copying Some Tasks To Host Memory with size: %u\n", hostBuf.size);
-                    spillToHost(task_pointers, task_pointers.d_tail_A, hostBuf);
-                    cudaMemset(d_abort, 0, sizeof(int));
+                    // printf("Maximum Capacity Reached on level %d\n", initialN);
+                    // printf("Copying Some Tasks To Host Memory with size: %u\n", hostBuf.size);
+                    // spillToHost(task_pointers, task_pointers.d_tail_A, hostBuf);
+                    // cudaMemset(d_abort, 0, sizeof(int));
+                }
+            }
+            cudaDeviceSynchronize();
+            checkCudaError(initialN);
+            // if (h_abort) break;
+            // cudaMemcpy(&tail, task_pointers.d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
+            // if (tail == 0) break;
+            flip = !flip;
+        }
+        // if(h_abort) break;
+    }
+    cudaMemset(task_pointers.d_tail_A, 0, sizeof(unsigned int));
+    cudaMemset(task_pointers.d_tail_B, 0, sizeof(unsigned int));
+    cudaMemset(task_pointers.d_tail_C, 0, sizeof(unsigned int));
+}
+
+void initializeBNB2(int initialN, T_pointers &task_pointers, P_pointers plex_pointers, S_pointers subgraph_pointers, unsigned int *d_blk, unsigned int *d_left, unsigned int *d_blk_counter, unsigned int *d_left_counter, uint8_t *commonMtx, unsigned int *plex_count, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* d_abort, HostTaskBuffer& hostBuf, HostTask* h_task_stage, unsigned int* state, unsigned int* res)
+{
+    cudaMemset(d_abort, 0, sizeof(int));
+    int h_abort = 0;
+    unsigned int head = 0;
+    while (true)
+    {
+        unsigned int tail;
+        // unsigned int plex;
+        cudaMemcpy(&tail, task_pointers.d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
+        // cudaMemcpy(&plex, plex_count, sizeof(unsigned int), cudaMemcpyDeviceToHost);
+        // printf("tail: %u, iteration: %d, hostSize: %u\n", tail, initialN, hostBuf.size);
+        if (tail == 0)
+            break;
+
+        unsigned int batch;
+        batch = std::min((unsigned)5*WARPS, tail);
+        // else batch = std::min((unsigned)3*WARPS, tail);
+
+        head = tail - batch;
+        
+        chkerr(cudaMemcpy(task_pointers.d_tail_B, &batch, sizeof(unsigned int), cudaMemcpyHostToDevice));
+        chkerr(cudaMemcpy(task_pointers.d_tasks_B, task_pointers.d_tasks_A + head, batch * sizeof(Task), cudaMemcpyDeviceToDevice));
+        chkerr(cudaMemcpy(task_pointers.d_all_labels_B, task_pointers.d_all_labels_A + head * MAX_BLK_SIZE, batch * MAX_BLK_SIZE * sizeof(uint8_t), cudaMemcpyDeviceToDevice));
+        chkerr(cudaMemcpy(task_pointers.d_all_neiInG_B, task_pointers.d_all_neiInG_A + head * MAX_BLK_SIZE, batch * MAX_BLK_SIZE * sizeof(uint16_t), cudaMemcpyDeviceToDevice));
+        chkerr(cudaMemcpy(task_pointers.d_all_neiInP_B, task_pointers.d_all_neiInP_A + head * MAX_BLK_SIZE, batch * MAX_BLK_SIZE * sizeof(uint16_t), cudaMemcpyDeviceToDevice));
+
+        tail = head;
+        cudaMemcpy(task_pointers.d_tail_A, &tail, sizeof(tail), cudaMemcpyHostToDevice);
+        bool flip = false;
+
+        while (true)
+        {
+            unsigned int *tail_in = flip ? task_pointers.d_tail_C : task_pointers.d_tail_B;
+            unsigned int *tail_out = flip ? task_pointers.d_tail_B : task_pointers.d_tail_C;
+            Task *Q_in = flip ? task_pointers.d_tasks_C : task_pointers.d_tasks_B;
+            Task *Q_out = flip ? task_pointers.d_tasks_B : task_pointers.d_tasks_C;
+            uint8_t *lab_out = flip ? task_pointers.d_all_labels_B : task_pointers.d_all_labels_C;
+            uint16_t *nei_out = flip ? task_pointers.d_all_neiInG_B : task_pointers.d_all_neiInG_C;
+            uint16_t *P_out = flip ? task_pointers.d_all_neiInP_B : task_pointers.d_all_neiInP_C;
+
+            cudaMemcpy(&tail, tail_in, sizeof(unsigned int), cudaMemcpyDeviceToHost);
+            // printf("tail inside: %d\n", tail);
+            if (tail == 0)
+                break;
+            cudaMemset(tail_out, 0, sizeof(unsigned int));
+            unsigned int numTasks = tail;
+            unsigned int waves = (numTasks) / WARPS + 1;
+
+            for (unsigned int w = 0; w < waves; w++)
+            {
+                BNB2<<<BLK_NUMS, BLK_DIM>>>(w, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, Q_in, Q_out, task_pointers.d_tasks_A, numTasks, 0, tail_out, task_pointers.d_tail_A, lab_out, nei_out, P_out, task_pointers.d_all_labels_A, task_pointers.d_all_neiInG_A, task_pointers.d_all_neiInP_A, plex_count, d_sat, d_commons, d_uni, cycles, d_adj, d_abort, state, res);
+                cudaMemcpy(&h_abort, d_abort, sizeof(int), cudaMemcpyDeviceToHost);
+                // if (h_abort) 
+                // {
+                //     printf("Maximum Capacity Reached on level %d\n", initialN);
+                //     break;
+                // }
+                cudaMemcpy(&tail, task_pointers.d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
+                // printf("tail: %d, capacity: %u\n", tail, MAX_CAP/4);
+                if (h_abort)
+                {
+                    // printf("Maximum Capacity Reached on level %d\n", initialN);
+                    // printf("Copying Some Tasks To Host Memory with size: %u\n", hostBuf.size);
+                    // spillToHost(task_pointers, task_pointers.d_tail_A, hostBuf);
+                    // cudaMemset(d_abort, 0, sizeof(int));
                 }
             }
             cudaDeviceSynchronize();
@@ -879,8 +961,10 @@ pn = peelG.n;
     uint32_t *d_adj;
 
     unsigned int* d_res;
+    unsigned int* d_res2;
     unsigned int* d_br;
     unsigned int* d_state;
+    unsigned int* d_state2;
     unsigned int* d_v2delete;
     unsigned int* d_len;
     unsigned int* d_sz;
@@ -888,6 +972,7 @@ pn = peelG.n;
     unsigned int* recCand1;
     unsigned int* recCand2;
     unsigned int* recExcl;
+    unsigned int* recCand;
 
     uint16_t* neiInG;
     uint16_t* neiInP; 
@@ -898,8 +983,10 @@ pn = peelG.n;
 
 
     cudaMalloc(&d_res, WARPS * MAX_DEPTH * sizeof(unsigned int));
+    cudaMalloc(&d_res2, WARPS * MAX_DEPTH * sizeof(unsigned int));
     cudaMalloc(&d_br, WARPS * MAX_DEPTH * sizeof(unsigned int));
     cudaMalloc(&d_state, WARPS * MAX_DEPTH * sizeof(unsigned int));
+    cudaMalloc(&d_state2, WARPS * MAX_DEPTH * sizeof(unsigned int));
     cudaMalloc(&d_v2delete, WARPS * MAX_DEPTH * sizeof(unsigned int));
     cudaMalloc(&d_len, WARPS * sizeof(unsigned int));
     cudaMalloc(&d_sz, WARPS * sizeof(unsigned int));
@@ -907,6 +994,7 @@ pn = peelG.n;
     cudaMalloc(&recCand1, WARPS * MAX_BLK_SIZE * sizeof(unsigned int));
     cudaMalloc(&recCand2, WARPS * MAX_BLK_SIZE * sizeof(unsigned int));
     cudaMalloc(&recExcl, WARPS * MAX_BLK_SIZE * sizeof(unsigned int));
+    cudaMalloc(&recCand, WARPS * MAX_BLK_SIZE * sizeof(unsigned int));
 
     cudaMalloc(&neiInG, WARPS * MAX_BLK_SIZE * sizeof(uint16_t));
     cudaMalloc(&neiInP, WARPS * MAX_BLK_SIZE * sizeof(uint16_t));
@@ -955,6 +1043,7 @@ pn = peelG.n;
     cudaMemset(recCand1, 0, WARPS * MAX_BLK_SIZE * sizeof(unsigned int));
     cudaMemset(recCand2, 0, WARPS * MAX_BLK_SIZE * sizeof(unsigned int));
     cudaMemset(recExcl, 0, WARPS * MAX_BLK_SIZE * sizeof(unsigned int));
+    cudaMemset(recCand, 0, WARPS * MAX_BLK_SIZE * sizeof(unsigned int));
     cudaMemset(d_uni, 0, WARPS * 32 * sizeof(uint32_t));
     cudaMemset(d_adj, 0, ADJSIZE * WARPS * sizeof(uint32_t));
     cudaMemset(cycles, 0, 40 * sizeof(unsigned long long));
@@ -1012,7 +1101,7 @@ pn = peelG.n;
 
     for (int i = 0; i < (pn/WARPS)+1; i++)
     {
-        printf("Iteration: %d/%d\n", i+1, (pn/WARPS)+1);
+        // printf("Iteration: %d/%d\n", i+1, (pn/WARPS)+1);
         decompose<<<BLK_NUMS, BLK_DIM>>>(i, plex_pointers, graph_pointers, degen_pointers, d_blk, d_blk_counter, d_left, d_left_counter, d_visited, global_count, left_count, validblk, d_hopSz, cycles);
         cudaDeviceSynchronize();
         checkCudaError(0);
@@ -1071,8 +1160,8 @@ pn = peelG.n;
         // while(h_abort = 1)
         // {
         cudaMemset(d_abort_flag, 0, sizeof(int));
-        // kSearch<<<BLK_NUMS, BLK_DIM>>>(i, plex_pointers, subgraph_pointers, graph_pointers, task_pointers, d_blk_counter, d_res, d_br, d_state, d_len, d_sz, neiInG, neiInP, plex_count, commonMtx, recCand1, recCand2, d_v2delete, d_adj, cycles, d_abort_flag);
-        kSearch3<<<BLK_NUMS, BLK_DIM>>>(i, plex_pointers, subgraph_pointers, graph_pointers, task_pointers, d_left, d_blk_counter, d_left_counter, d_res, d_br, d_state, d_len, d_sz, neiInG, neiInP, plex_count, commonMtx, recCand1, recCand2, recExcl, d_v2delete, d_adj, d_sat, d_commons, d_uni);
+        kSearch<<<BLK_NUMS, BLK_DIM>>>(i, plex_pointers, subgraph_pointers, graph_pointers, task_pointers, d_blk_counter, d_res, d_br, d_state, d_len, d_sz, neiInG, neiInP, plex_count, commonMtx, recCand1, recCand2, d_v2delete, d_adj, cycles, d_abort_flag);
+        // kSearch3<<<BLK_NUMS, BLK_DIM>>>(i, plex_pointers, subgraph_pointers, graph_pointers, task_pointers, d_left, d_blk_counter, d_left_counter, d_res, d_br, d_state, d_len, d_sz, neiInG, neiInP, plex_count, commonMtx, recCand1, recCand2, recExcl, recCand, d_v2delete, d_adj, d_sat, d_commons, d_uni);
         cudaDeviceSynchronize();
         checkCudaError(5);
 
@@ -1110,7 +1199,7 @@ pn = peelG.n;
         // time_6 += time_milli_sec;
         // cudaEventRecord(event_start);
 
-        // initializeBNB(6, task_pointers, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, plex_count, d_sat, d_commons, d_uni, cycles, d_adj, d_abort2, buf, h_task_stage);
+        initializeBNB2(6, task_pointers, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, plex_count, d_sat, d_commons, d_uni, cycles, d_adj, d_abort2, buf, h_task_stage, d_state2, d_res2);
         
         // if (h_abort)
         // {

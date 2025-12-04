@@ -4371,3 +4371,467 @@ __global__ void kSearch3(int idx, P_pointers p, S_pointers s, G_pointers g, T_po
   }
   // if (lane_id == 0) printf("warp_id: %d, maximal k-plexes: %d\n", warp_id, plex_count[0]);
 }
+
+__global__ void BNB2(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsigned int* d_left, unsigned int* d_blk_counter, unsigned int* d_left_counter, uint8_t* commonMtx, Task* tasks, Task* outTasks, Task* global_tasks, unsigned int N, unsigned int head, unsigned int* tailPtr, unsigned int* global_tail, uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, unsigned int* plex_count, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* d_abort, unsigned int* d_state, unsigned int* d_res, unsigned int* recExcl, unsigned int* recCand)
+{
+  unsigned int global_index = blockIdx.x * blockDim.x + threadIdx.x;
+  unsigned int warp_id = (global_index / 32);
+  unsigned int lane_id = threadIdx.x % 32;
+
+  //if (lane_id == 0) printf("N: %d, warp_id: %d, i: %d\n", N, warp_id, i);
+  if ((warp_id+WARPS*i) >= N)  return;
+  // //if (lane_id == 0) printf("Hi\n");
+  int k = p.k;
+  int q = p.lb;
+  Task t = tasks[warp_id+WARPS*i];
+  uint8_t* labelsBase = t.labels;
+  unsigned int* blkBase = d_blk + t.idx * MAX_BLK_SIZE;
+  unsigned int* leftBase = d_left + t.idx * MAX_BLK_SIZE;
+  uint16_t* neiInG = t.neiInG;
+  uint16_t* neiInP = t.neiInP;
+  unsigned int* left_count = d_left_counter + t.idx;
+  unsigned int* local_n = d_blk_counter + t.idx;
+  unsigned int PlexSz = t.PlexSz;
+  unsigned int CandSz = t.CandSz;
+  unsigned int ExclSz = t.ExclSz;
+  size_t capacity = size_t(t.idx) * CAP;
+  uint8_t* commonMtxBase = commonMtx + capacity;
+
+  unsigned int* degreeBase = s.degree + t.idx * MAX_BLK_SIZE;
+  unsigned int* l_degreeBase = s.l_degree + t.idx * MAX_BLK_SIZE;
+  unsigned int* offsetsBase = s.offsets + t.idx * MAX_BLK_SIZE;
+  unsigned int* neighborsBase = s.neighbors + t.idx * MAX_BLK_SIZE * AVG_DEGREE;
+  unsigned int* l_offsetsBase = s.l_offsets + t.idx * MAX_BLK_SIZE;
+  unsigned int* l_neighborsBase = s.l_neighbors + t.idx * MAX_BLK_SIZE * AVG_LEFT_DEGREE;
+
+  unsigned int* plex = s.P + warp_id * MAX_BLK_SIZE;
+  unsigned int* cand = s.C + warp_id * MAX_BLK_SIZE;
+  unsigned int* excl = s.X + warp_id * MAX_BLK_SIZE;
+
+  uint16_t* local_sat = d_sat + warp_id * MAX_BLK_SIZE;
+  uint16_t* local_commons = d_commons + warp_id * MAX_BLK_SIZE;
+  uint32_t* local_uni = d_uni + warp_id * 32;
+
+  uint32_t* adjList = d_adj + t.idx * ADJSIZE;
+
+  unsigned int* state = d_state + warp_id * MAX_DEPTH;
+  unsigned int* res = d_res + warp_id * MAX_DEPTH;
+
+  unsigned int* recCandBase = recCand + warp_id * MAX_BLK_SIZE;
+  unsigned int* recExclBase = recExcl + warp_id * MAX_BLK_SIZE;
+
+  unsigned int n;
+  if (lane_id == 0) n = local_n[0];
+  n = __shfl_sync(0xFFFFFFFF, n, 0);
+
+  initializePCX(lane_id, labelsBase, n, plex, cand, excl);
+
+  int sz = 0;
+  state[sz] = 0;
+  sz++;
+
+
+  while(sz)
+  {
+    if (sz >= MAX_DEPTH)
+    {
+      if (lane_id == 0) printf("capacity crossed: %d\n", sz);
+      break;
+    }
+
+    switch(state[sz-1])
+    {
+      case 0:
+        // if (lane_id == 0) printf("Hello to case 1 from warp: %d with task: %d\n", warp_id, t.idx);
+        if (PlexSz + CandSz < q)
+        {
+          sz--;
+          continue;
+        }
+        if (CandSz == 0)
+        {
+          if (ExclSz == 0 &&
+              PlexSz >= q &&
+              isMaximal_opt(lane_id, k, PlexSz, leftBase, left_count[0], l_neighborsBase, l_offsetsBase, l_degreeBase, neiInP, neighborsBase, offsetsBase, degreeBase, plex, n, local_sat, local_commons, local_uni))
+              {
+                if (lane_id == 0) atomicAdd(&plex_count[0], 1);
+              }
+              sz--;
+              continue;
+        }
+        __syncwarp();
+
+        int minnei_Plex = INT_MAX;
+        int pivot = -1;
+        int minnei_Cand = INT_MAX;
+
+        for(int i = lane_id; i < PlexSz; i+=32)
+        {
+          const int v = plex[i];
+          if (neiInG[v] < minnei_Plex)
+          {
+            minnei_Plex = neiInG[v];
+            pivot = v;
+          }
+        }
+
+        for(int offset = 16; offset > 0; offset >>= 1)
+        {
+          int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei_Plex, offset);
+          int otherIdx = __shfl_down_sync(0xFFFFFFFF, pivot, offset);
+          if (otherMin < minnei_Plex || (otherMin == minnei_Plex && otherIdx < pivot))
+          {
+            minnei_Plex = otherMin;
+            pivot = otherIdx;
+          }
+        }
+
+        minnei_Plex = __shfl_sync(0xFFFFFFFF, minnei_Plex, 0);
+        pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
+
+        int pivot_plex = pivot;
+          
+        if (minnei_Plex + k < max(q, PlexSz))
+        {
+          sz--;
+          continue;
+        }
+        if (minnei_Plex + k < PlexSz + CandSz)
+        {
+          minnei_Cand = INT_MAX;
+          pivot = -1;
+            
+          for (int i = lane_id; i < CandSz; i+=32)
+          {
+            const int v = cand[i];
+            int check = v * n + pivot_plex;
+            if (!((adjList[check >> 5] >> (check & 31)) &1u ))
+            {
+              if (neiInG[v] < minnei_Cand)
+              {
+                minnei_Cand = neiInG[v];
+                pivot = v;
+              }
+              else if (neiInG[v] == minnei_Cand && neiInP[pivot] > neiInP[v])
+              {
+                pivot = v;
+              }
+            }
+          }
+            
+          for (int offset = 16; offset > 0; offset >>= 1)
+          {
+            int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei_Cand, offset);
+            int otherIdx = __shfl_down_sync(0xFFFFFFFF, pivot, offset);
+            if (otherMin < minnei_Cand || (otherMin == minnei_Cand && otherIdx != -1 && neiInP[pivot] > neiInP[otherIdx]))
+            {
+              minnei_Cand = otherMin;
+              pivot = otherIdx;
+            }
+          }
+          minnei_Cand = __shfl_sync(0xFFFFFFFF, minnei_Cand, 0);
+          pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
+          // if (lane_id == 0) printf("pivot: %d\n", pivot);
+          // if (lane_id == 0) printf("pivot plex: %d\n", pivot_plex);
+          if (pivot == -1)
+          {
+            pivot = cand[CandSz-1];
+          }
+          if (lane_id == 0) state[sz-1] = 1;
+          __syncwarp();
+          continue; 
+        }
+        int minnei = minnei_Plex;
+
+        for (int i = lane_id; i < CandSz; i+=32)
+        {
+          const int v = cand[i];
+          if (neiInG[v] < minnei)
+          {
+            minnei = neiInG[v];
+            pivot = v;
+          }
+          else if (neiInG[v] == minnei && neiInP[pivot] > neiInP[v])
+          {
+            pivot = v;
+          }
+        }
+
+        for (int offset = 16; offset > 0; offset >>= 1)
+        {
+          int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei, offset);
+          int otherIdx = __shfl_down_sync(0xFFFFFFFF, pivot, offset);
+          if (otherMin < minnei || (otherMin == minnei && otherIdx != -1 && neiInP[pivot] > neiInP[otherIdx]))
+          {
+            minnei = otherMin;
+            pivot = otherIdx;
+          }
+        }
+        minnei = __shfl_sync(0xFFFFFFFF, minnei, 0);
+        pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
+          
+        if(minnei >= (PlexSz + CandSz - k))
+        {
+          if (PlexSz + CandSz < q)
+          {
+            sz--;
+            continue;
+          }
+          bool flag = false;
+
+          for (int i = lane_id; i < ExclSz; i+=32)
+          {
+            const int v = excl[i];
+            if (isKplexPC2(v, k, PlexSz+CandSz, PlexSz, CandSz, neiInG, plex, cand, n, neighborsBase, offsetsBase, degreeBase, adjList))
+            {
+              flag = true;
+            }
+          }
+
+          if (__any_sync(0xFFFFFFFF, flag))
+          {
+            sz--;
+            continue;
+          }
+
+          if (isMaximalPC_opt(lane_id, k, PlexSz, CandSz, PlexSz + CandSz, leftBase, left_count[0], l_neighborsBase, l_offsetsBase, l_degreeBase, neiInG, neighborsBase, offsetsBase, degreeBase, plex, cand, n, local_sat, local_commons, local_uni))
+          {
+            if (lane_id == 0) atomicAdd(&plex_count[0], 1);
+          }
+          sz--;
+          continue;
+        }
+        if (lane_id == 0) state[sz-1] = 1;
+        __syncwarp();
+        continue;
+      
+      case 1:
+        // if (lane_id == 0) printf("Hello to case 1 from warp: %d with task: %d\n", warp_id, t.idx);
+        // if (lane_id == 0) printf("Case - 0\n");
+        ExclSz++;
+        if (lane_id == 0)
+        {
+          excl[ExclSz-1] = pivot;
+          for (int i = 0; i < CandSz; i++)
+          {
+            if (cand[i] == pivot)
+            {
+              int temp = cand[i];
+              cand[i] = cand[CandSz-1];
+              cand[CandSz-1] = temp;
+              break;
+            }
+          }
+          res[sz-1] = pivot;
+        }
+        CandSz--;
+        __syncwarp();
+        subG(lane_id, pivot, neiInG, n, neighborsBase, offsetsBase, degreeBase);
+
+          
+        if (lane_id == 0)
+        {
+          state[sz-1] = 2;
+          state[sz] = 0;
+        }
+        __syncwarp();
+        sz++;
+        continue;
+      
+      case 2:
+        // if (lane_id == 0) printf("Hello to case 2 from warp: %d with task: %d\n", warp_id, t.idx);
+        CandSz++;
+        if (lane_id == 0)
+        {
+        cand[CandSz-1] = res[sz-1];
+        // excl[--ExclSz[0]];
+        }
+        __syncwarp();
+        pivot = cand[CandSz-1];
+        for (int i = 0; i < ExclSz; i++)
+        {
+          if (excl[i] == pivot)
+          {
+            if (lane_id == 0)
+            {
+              int temp = excl[i];
+              excl[i] = excl[ExclSz-1];
+              excl[ExclSz-1] = temp;
+            }
+            ExclSz--;
+            break;
+          }
+        }
+        addG(lane_id, pivot, neiInG, n, neighborsBase, offsetsBase, degreeBase);
+
+        PlexSz++;
+        if (lane_id == 0)
+        {
+          plex[PlexSz-1] = pivot;
+        }
+        for (int i = 0; i < CandSz; i++)
+        {
+          if (cand[i] == pivot)
+          {
+            if (lane_id == 0)
+            {
+              int temp = cand[i];
+              cand[i] = cand[CandSz-1];
+              cand[CandSz-1] = temp;
+            }
+            CandSz--;
+            break;
+          }
+        }
+        __syncwarp();
+        for (int j = lane_id; j < degreeBase[pivot]; j+=32)
+        {
+          const int nei = neighborsBase[offsetsBase[pivot]+j];
+          neiInP[nei]++;
+        }
+        __syncwarp();
+
+        const uint8_t* row = commonMtxBase + (size_t) pivot * n;
+
+        int read  = 0;
+        int write = 0;
+        int size = CandSz;
+        // int total_removed = 0;
+
+        while (read < size)
+        {
+          const int take = min(32, size - read);
+          const bool active = (lane_id < take);
+          //const int idx = i + lane_id;
+
+          unsigned int v = 0;
+          if (active) v = cand[read+lane_id];
+
+          const bool keep = active && (isKplex3(v, k, PlexSz, neiInP, plex, n, neighborsBase, offsetsBase, degreeBase, adjList)) && !(row[v] < UNLINK2EQUAL);
+
+          const unsigned activemask = __ballot_sync(0xFFFFFFFF, active);
+          unsigned keepmask = __ballot_sync(0xFFFFFFFF, keep);
+          unsigned dropmask = activemask ^ keepmask;
+
+          const int keep_rank = __popc(keepmask & ((1u << lane_id) - 1));
+          // const int drop_rank = __popc(dropmask & ((1u << lane_id) - 1));
+          const int num_keep  = __popc(keepmask);
+
+          if (active && keep)
+          {
+            cand[write + keep_rank] = v;
+          }
+
+          while (dropmask)
+          {
+            const int leader = __ffs(dropmask) - 1;
+            const unsigned vdrop = __shfl_sync(0xFFFFFFFF, v, leader);
+            recCandBase[vdrop] = (unsigned) (sz-1);
+            subG(lane_id, vdrop, neiInG, n, neighborsBase, offsetsBase, degreeBase);
+            dropmask &= (dropmask - 1);
+          }
+
+          if (lane_id == 0)
+          {
+            read += take;
+            write += num_keep;
+            // size = newR;
+            // total_removed += num_drop;
+          }
+          read  = __shfl_sync(0xFFFFFFFF, read, 0);
+          write = __shfl_sync(0xFFFFFFFF, write, 0);
+          // size = __shfl_sync(0xFFFFFFFF, size, 0);
+        }
+        CandSz = write;
+        __syncwarp();
+        // if (lane_id == 0) v2delete[sz-1] = total_removed;
+
+        if (upperBound2(lane_id, k, q, plex, neiInG, PlexSz))
+        {
+          read  = 0;
+          write = 0;
+          size = ExclSz;
+          // int total_removed = 0;
+
+          while (read < size)
+          {
+            const int take = min(32, size - read);
+            const bool active = (lane_id < take);
+            //const int idx = i + lane_id;
+
+            unsigned int v = 0;
+            if (active) v = excl[read+lane_id];
+
+            const bool keep = active && (isKplex3(v, k, PlexSz, neiInP, plex, n, neighborsBase, offsetsBase, degreeBase, adjList)) && !(row[v] < UNLINK2MORE);
+
+            const unsigned activemask = __ballot_sync(0xFFFFFFFF, active);
+            unsigned keepmask = __ballot_sync(0xFFFFFFFF, keep);
+            unsigned dropmask = activemask ^ keepmask;
+
+            const int keep_rank = __popc(keepmask & ((1u << lane_id) - 1));
+            // const int drop_rank = __popc(dropmask & ((1u << lane_id) - 1));
+            const int num_keep  = __popc(keepmask);
+
+            if (active && keep)
+            {
+              excl[write + keep_rank] = v;
+            }
+
+            while (dropmask)
+            {
+              const int leader = __ffs(dropmask) - 1;
+              const unsigned vdrop = __shfl_sync(0xFFFFFFFF, v, leader);
+              recExclBase[vdrop] = (unsigned) (sz-1);
+              dropmask &= (dropmask - 1);
+            }
+
+            if (lane_id == 0)
+            {
+              read += take;
+              write += num_keep;
+              // size = newR;
+              // total_removed += num_drop;
+            }
+            read  = __shfl_sync(0xFFFFFFFF, read, 0);
+            write = __shfl_sync(0xFFFFFFFF, write, 0);
+              // size = __shfl_sync(0xFFFFFFFF, size, 0);
+          }
+          ExclSz = write;
+          __syncwarp();
+
+          if (lane_id == 0)
+          {
+            state[sz-1] = 3;
+            state[sz] = 0;
+          }
+          __syncwarp();
+          sz++;
+          continue;
+        }
+        // if (lane_id == 0) res[sz-1] = 0;
+        if (lane_id == 0) state[sz-1] = 3;
+        __syncwarp();
+        continue;
+
+      case 3:
+        // if (lane_id == 0) printf("Hello to case 3 from warp: %d with task: %d\n", warp_id, t.idx);
+        recoverCand23(lane_id, n, excl, recExclBase, sz, &ExclSz);
+        ExclSz = __shfl_sync(0xFFFFFFFF, ExclSz, 0);
+        recoverCand12(lane_id, cand, recCandBase, neiInG, sz, n, &CandSz, neighborsBase, degreeBase, offsetsBase);
+        CandSz = __shfl_sync(0xFFFFFFFF, CandSz, 0);
+        CandSz++;
+        PlexSz--;
+        if (lane_id == 0) cand[CandSz-1] = plex[PlexSz];
+        __syncwarp();
+        pivot = cand[CandSz-1];
+        for (int j = lane_id; j < degreeBase[pivot]; j+=32)
+        {
+          const int nei = neighborsBase[offsetsBase[pivot]+j];
+          neiInP[nei]--;
+        }
+        __syncwarp();
+        sz--;
+        continue;
+    }
+  }
+}
