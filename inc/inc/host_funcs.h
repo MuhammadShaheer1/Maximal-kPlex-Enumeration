@@ -888,7 +888,6 @@ pn = peelG.n;
     unsigned int* recCand1;
     unsigned int* recCand2;
     unsigned int* recExcl;
-    unsigned int* recCand;
 
     uint16_t* neiInG;
     uint16_t* neiInP; 
@@ -908,7 +907,6 @@ pn = peelG.n;
     cudaMalloc(&recCand1, WARPS * MAX_BLK_SIZE * sizeof(unsigned int));
     cudaMalloc(&recCand2, WARPS * MAX_BLK_SIZE * sizeof(unsigned int));
     cudaMalloc(&recExcl, WARPS * MAX_BLK_SIZE * sizeof(unsigned int));
-    cudaMalloc(&recCand, WARPS * MAX_BLK_SIZE * sizeof(unsigned int));
 
     cudaMalloc(&neiInG, WARPS * MAX_BLK_SIZE * sizeof(uint16_t));
     cudaMalloc(&neiInP, WARPS * MAX_BLK_SIZE * sizeof(uint16_t));
@@ -957,7 +955,6 @@ pn = peelG.n;
     cudaMemset(recCand1, 0, WARPS * MAX_BLK_SIZE * sizeof(unsigned int));
     cudaMemset(recCand2, 0, WARPS * MAX_BLK_SIZE * sizeof(unsigned int));
     cudaMemset(recExcl, 0, WARPS * MAX_BLK_SIZE * sizeof(unsigned int));
-    cudaMemset(recCand, 0, WARPS * MAX_BLK_SIZE * sizeof(unsigned int));
     cudaMemset(d_uni, 0, WARPS * 32 * sizeof(uint32_t));
     cudaMemset(d_adj, 0, ADJSIZE * WARPS * sizeof(uint32_t));
     cudaMemset(cycles, 0, 40 * sizeof(unsigned long long));
@@ -1015,7 +1012,7 @@ pn = peelG.n;
 
     for (int i = 0; i < (pn/WARPS)+1; i++)
     {
-        // printf("Iteration: %d/%d\n", i+1, (pn/WARPS)+1);
+        printf("Iteration: %d/%d\n", i+1, (pn/WARPS)+1);
         decompose<<<BLK_NUMS, BLK_DIM>>>(i, plex_pointers, graph_pointers, degen_pointers, d_blk, d_blk_counter, d_left, d_left_counter, d_visited, global_count, left_count, validblk, d_hopSz, cycles);
         cudaDeviceSynchronize();
         checkCudaError(0);
@@ -1075,7 +1072,7 @@ pn = peelG.n;
         // {
         cudaMemset(d_abort_flag, 0, sizeof(int));
         // kSearch<<<BLK_NUMS, BLK_DIM>>>(i, plex_pointers, subgraph_pointers, graph_pointers, task_pointers, d_blk_counter, d_res, d_br, d_state, d_len, d_sz, neiInG, neiInP, plex_count, commonMtx, recCand1, recCand2, d_v2delete, d_adj, cycles, d_abort_flag);
-        kSearch3<<<BLK_NUMS, BLK_DIM>>>(i, plex_pointers, subgraph_pointers, graph_pointers, task_pointers, d_left, d_blk_counter, d_left_counter, d_res, d_br, d_state, d_len, d_sz, neiInG, neiInP, plex_count, commonMtx, recCand1, recCand2, recExcl, recCand, d_v2delete, d_adj, d_sat, d_commons, d_uni);
+        kSearch3<<<BLK_NUMS, BLK_DIM>>>(i, plex_pointers, subgraph_pointers, graph_pointers, task_pointers, d_left, d_blk_counter, d_left_counter, d_res, d_br, d_state, d_len, d_sz, neiInG, neiInP, plex_count, commonMtx, recCand1, recCand2, recExcl, d_v2delete, d_adj, d_sat, d_commons, d_uni);
         cudaDeviceSynchronize();
         checkCudaError(5);
 

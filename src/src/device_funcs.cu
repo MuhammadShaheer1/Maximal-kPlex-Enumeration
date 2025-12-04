@@ -3026,14 +3026,14 @@ __global__ void kSearch2(int idx, P_pointers p, S_pointers s, G_pointers g, T_po
   }
 }
 
-__global__ void kSearch3(int idx, P_pointers p, S_pointers s, G_pointers g, T_pointers t, unsigned int* d_left,  unsigned int* d_blk_counter, unsigned int* d_left_counter, unsigned int* d_res, unsigned int* d_br, unsigned int* d_state, unsigned int* d_len, unsigned int* d_sz, uint16_t* neiInG, uint16_t* neiInP, unsigned int* plex_count, uint8_t* commonMtx, unsigned int* recCand1, unsigned int* recCand2, unsigned int* recExcl, unsigned int* recCand, unsigned int* d_v2delete, uint32_t* d_adj, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni)
+__global__ void kSearch3(int idx, P_pointers p, S_pointers s, G_pointers g, T_pointers t, unsigned int* d_left,  unsigned int* d_blk_counter, unsigned int* d_left_counter, unsigned int* d_res, unsigned int* d_br, unsigned int* d_state, unsigned int* d_len, unsigned int* d_sz, uint16_t* neiInG, uint16_t* neiInP, unsigned int* plex_count, uint8_t* commonMtx, unsigned int* recCand1, unsigned int* recCand2, unsigned int* recExcl, unsigned int* d_v2delete, uint32_t* d_adj, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni)
 {
   unsigned int global_index = blockIdx.x * blockDim.x + threadIdx.x;
   unsigned int warp_id = (global_index / 32);
   unsigned int lane_id = threadIdx.x % 32;
   unsigned int local_warp_id = threadIdx.x >> 5; 
 
-  // if (warp_id != 10) return;
+  if (warp_id != 10) return;
 
   if ((warp_id+WARPS*idx) >= (g.n-p.lb+2)) return;
 
@@ -3085,7 +3085,6 @@ __global__ void kSearch3(int idx, P_pointers p, S_pointers s, G_pointers g, T_po
   unsigned int* recCand1Base = recCand1 + warp_id * MAX_BLK_SIZE;
   unsigned int* recCand2Base = recCand2 + warp_id * MAX_BLK_SIZE;
   unsigned int* recExclBase = recExcl + warp_id * MAX_BLK_SIZE;
-  unsigned int* recCandBase = recCand + warp_id * MAX_BLK_SIZE;
 
   // t.d_tail_A[0] = 0;
 
@@ -4080,7 +4079,6 @@ __global__ void kSearch3(int idx, P_pointers p, S_pointers s, G_pointers g, T_po
                 break;
               }
             }
-            res[sz-1] = pivot;
           }
           __syncwarp();
           subG(lane_id, pivot, neiInGBase, n, neighborsBase, offsetsBase, degreeBase);
@@ -4159,22 +4157,10 @@ __global__ void kSearch3(int idx, P_pointers p, S_pointers s, G_pointers g, T_po
         }
           if (lane_id == 0)
           {
-          cand1[Cand1Sz[0]++] = res[sz-1];
-          // excl[--ExclSz[0]];
+          cand1[Cand1Sz[0]++] = excl[--ExclSz[0]];
           }
           __syncwarp();
           pivot = cand1[Cand1Sz[0]-1];
-          for (int i = 0; i < ExclSz[0]; i++)
-            {
-              if (excl[i] == pivot)
-              {
-                int temp = excl[i];
-                excl[i] = excl[ExclSz[0]-1];
-                excl[ExclSz[0]-1] = temp;
-                ExclSz[0]--;
-                break;
-              }
-            }
           addG(lane_id, pivot, neiInGBase, n, neighborsBase, offsetsBase, degreeBase);
 
           if (lane_id == 0)
@@ -4199,115 +4185,146 @@ __global__ void kSearch3(int idx, P_pointers p, S_pointers s, G_pointers g, T_po
             neiInPBase[nei]++;
           }
           __syncwarp();
+          // read = 0;
+          // write = 0;
+          // size = Cand1Sz[0];
 
-          const uint8_t* row = commonMtxBase + (size_t) pivot * n;
+          // while (read < size)
+          // {
+          //   const int take = min(32, size - read);
+          //   const bool active = (lane_id < take);
 
-          int read  = 0;
-          int write = 0;
-          int size = Cand1Sz[0];
+          //   unsigned int v = 0;
+          //   if (active) v = cand1[read+lane_id];
+            
+          //   const bool is_pivot = active && (v == pivot);
+          //   const bool keep = active && (!is_pivot);
+
+          //   unsigned int mask = __activemask();
+          //   unsigned int keepmask = __ballot_sync(mask, keep);
+
+          //   const int keep_rank = __popc(keepmask & ((1u << lane_id) - 1));
+          //   const int num_keep = __popc(keepmask);
+
+          //   if (active && keep) cand1[write+keep_rank] = v;
+            
+          //   if (lane_id == 0)
+          //   {
+          //     read += take;
+          //     write += num_keep;
+          //   }
+          //   read = __shfl_sync(mask, read, 0);
+          //   write = __shfl_sync(mask, write, 0);
+          // }
+          // if (lane_id == 0) Cand1Sz[0] = write;
+          // __syncwarp();
+
+          // updateCand13(lane_id, cand1, commonMtxBase, recCand1Base, neiInGBase, sz, n, pivot, &Cand1Sz[0], neighborsBase, degreeBase, offsetsBase);
+          int len = 0;
+          for (int i = 0; i < Cand1Sz[0]; i++)
+          {
+            const int v = cand1[i];
+            if (!isKplex2(lane_id, v, k, PlexSz[0], neiInPBase, plex, n, neighborsBase, offsetsBase, degreeBase, adjList))
+            {
+              if (lane_id == 0)
+              {
+                int temp = cand1[Cand1Sz[0]-1];
+                cand1[Cand1Sz[0]-1] = cand1[i];
+                cand1[i] = temp;
+                Cand1Sz[0]--;
+                len++;
+              }
+              __syncwarp();
+              subG(lane_id, v, neiInGBase, n, neighborsBase, offsetsBase, degreeBase);
+              i--;
+            }
+          }
+          len = __shfl_sync(0xFFFFFFFF, len, 0);
+          if (lane_id == 0) v2delete[sz-1] = len;
+
+          // read  = 0;
+          // write = 0;
+          // size = Cand1Sz[0];
           // int total_removed = 0;
 
-          while (read < size)
-          {
-            const int take = min(32, size - read);
-            const bool active = (lane_id < take);
-            //const int idx = i + lane_id;
+          // while (read < size)
+          // {
+          //   const int take = min(32, size - read);
+          //   const bool active = (lane_id < take);
+          //   //const int idx = i + lane_id;
 
-            unsigned int v = 0;
-            if (active) v = cand1[read+lane_id];
+          //   unsigned int v = 0;
+          //   if (active) v = cand[read+lane_id];
 
-            const bool keep = active && (isKplex3(v, k, PlexSz[0], neiInPBase, plex, n, neighborsBase, offsetsBase, degreeBase, adjList)) && !(row[v] < UNLINK2EQUAL);
+          //   const bool keep = active && (isKplex3(v, k, PlexSz[0], neiInPBase, plex, n, neighborsBase, offsetsBase, degreeBase, adjList));
 
-            const unsigned activemask = __ballot_sync(0xFFFFFFFF, active);
-            unsigned keepmask = __ballot_sync(0xFFFFFFFF, keep);
-            unsigned dropmask = activemask ^ keepmask;
+          //   const unsigned activemask = __ballot_sync(0xFFFFFFFF, active);
+          //   unsigned keepmask = __ballot_sync(0xFFFFFFFF, keep);
+          //   unsigned dropmask = activemask ^ keepmask;
 
-            const int keep_rank = __popc(keepmask & ((1u << lane_id) - 1));
-            // const int drop_rank = __popc(dropmask & ((1u << lane_id) - 1));
-            const int num_keep  = __popc(keepmask);
+          //   const int keep_rank = __popc(keepmask & ((1u << lane_id) - 1));
+          //   // const int drop_rank = __popc(dropmask & ((1u << lane_id) - 1));
+          //   const int num_keep  = __popc(keepmask);
+          //   const int num_drop  = take - num_keep;
 
-            if (active && keep)
-            {
-              cand1[write + keep_rank] = v;
-            }
+          //   if (active && keep)
+          //   {
+          //     cand1[write + keep_rank] = v;
+          //   }
 
-            while (dropmask)
-            {
-              const int leader = __ffs(dropmask) - 1;
-              const unsigned vdrop = __shfl_sync(0xFFFFFFFF, v, leader);
-              recCandBase[vdrop] = (unsigned) (sz-1);
-              subG(lane_id, vdrop, neiInGBase, n, neighborsBase, offsetsBase, degreeBase);
-              dropmask &= (dropmask - 1);
-            }
+          //   // const int newR = size - num_drop;
+          //   // if (activemask && dropmask)
+          //   // {
+          //   //   cand1[newR + drop_rank] = v;
+          //   // }
 
-            if (lane_id == 0)
-            {
-              read += take;
-              write += num_keep;
-              // size = newR;
-              // total_removed += num_drop;
-            }
-            read  = __shfl_sync(0xFFFFFFFF, read, 0);
-            write = __shfl_sync(0xFFFFFFFF, write, 0);
-            // size = __shfl_sync(0xFFFFFFFF, size, 0);
-          }
-            if (lane_id == 0) Cand1Sz[0] = write;
-          __syncwarp();
+
+          //   while (dropmask)
+          //   {
+          //     const int leader = __ffs(dropmask) - 1;
+          //     const unsigned vdrop = __shfl_sync(0xFFFFFFFF, v, leader);
+          //     subG(lane_id, vdrop, neiInGBase, n, neighborsBase, offsetsBase, degreeBase);
+          //     dropmask &= (dropmask - 1);
+          //   }
+
+          //   if (lane_id == 0)
+          //   {
+          //     read += take;
+          //     write += num_keep;
+          //     // size = newR;
+          //     total_removed += num_drop;
+          //   }
+          //   read  = __shfl_sync(0xFFFFFFFF, read, 0);
+          //   write = __shfl_sync(0xFFFFFFFF, write, 0);
+          //   // size = __shfl_sync(0xFFFFFFFF, size, 0);
+          // }
+          //   Cand1Sz[0] = write;
+          // __syncwarp();
           // if (lane_id == 0) v2delete[sz-1] = total_removed;
 
           if (upperBound2(lane_id, k, q, plex, neiInGBase, PlexSz[0]))
           {
-            read  = 0;
-            write = 0;
-            size = ExclSz[0];
-            // int total_removed = 0;
-
-            while (read < size)
+            int len = 0;
+            for (int i = 0; i < ExclSz[0]; i++)
             {
-              const int take = min(32, size - read);
-              const bool active = (lane_id < take);
-              //const int idx = i + lane_id;
-
-              unsigned int v = 0;
-              if (active) v = excl[read+lane_id];
-
-              const bool keep = active && (isKplex3(v, k, PlexSz[0], neiInPBase, plex, n, neighborsBase, offsetsBase, degreeBase, adjList)) && !(row[v] < UNLINK2MORE);
-
-              const unsigned activemask = __ballot_sync(0xFFFFFFFF, active);
-              unsigned keepmask = __ballot_sync(0xFFFFFFFF, keep);
-              unsigned dropmask = activemask ^ keepmask;
-
-              const int keep_rank = __popc(keepmask & ((1u << lane_id) - 1));
-              // const int drop_rank = __popc(dropmask & ((1u << lane_id) - 1));
-              const int num_keep  = __popc(keepmask);
-
-              if (active && keep)
+              const int v = excl[i];
+              if (!isKplex2(lane_id, v, k, PlexSz[0], neiInPBase, plex, n, neighborsBase, offsetsBase, degreeBase, adjList))
               {
-                excl[write + keep_rank] = v;
+                if (lane_id == 0)
+                {
+                  int temp = excl[ExclSz[0]-1];
+                  excl[ExclSz[0]-1] = excl[i];
+                  excl[i] = temp;
+                  ExclSz[0]--;
+                  recExclBase[v] = sz-1;
+                  len++;
+                }
+                __syncwarp();
+                i--;
               }
-
-              while (dropmask)
-              {
-                const int leader = __ffs(dropmask) - 1;
-                const unsigned vdrop = __shfl_sync(0xFFFFFFFF, v, leader);
-                recExclBase[vdrop] = (unsigned) (sz-1);
-                dropmask &= (dropmask - 1);
-              }
-
-              if (lane_id == 0)
-              {
-                read += take;
-                write += num_keep;
-                // size = newR;
-                // total_removed += num_drop;
-              }
-              read  = __shfl_sync(0xFFFFFFFF, read, 0);
-              write = __shfl_sync(0xFFFFFFFF, write, 0);
-              // size = __shfl_sync(0xFFFFFFFF, size, 0);
             }
-              if (lane_id == 0) ExclSz[0] = write;
-            __syncwarp();
-
+            len = __shfl_sync(0xFFFFFFFF, len, 0);
+            if (lane_id == 0) res[sz-1] = len;
             if (lane_id == 0)
             {
               state[sz-1] = 10;
@@ -4351,8 +4368,29 @@ __global__ void kSearch3(int idx, P_pointers p, S_pointers s, G_pointers g, T_po
         // printf("\n");
         // printf("\n");
         }
-          recoverCand23(lane_id, n, excl, recExclBase, sz, &ExclSz[0]);
-          recoverCand12(lane_id, cand1, recCandBase, neiInGBase, sz, n, &Cand1Sz[0], neighborsBase, degreeBase, offsetsBase);
+        
+          // if (lane_id == 0) ExclSz[0] += res[sz-1];
+          // if (lane_id == 0) res[sz-1] = 0;
+          if (lane_id == 0)
+          {
+            for (int i = 0; i < n; i++)
+            {
+              if (recExclBase[i] == sz-1)
+              {
+                excl[ExclSz[0]++] = i;
+                recExclBase[i] = 0;
+              }
+            }
+          }
+
+          for (int i = 0; i < v2delete[sz-1]; i++)
+          {
+            if (lane_id == 0) Cand1Sz[0]++;
+            __syncwarp();
+            const int v = cand1[Cand1Sz[0]-1];
+            addG(lane_id, v, neiInGBase, n, neighborsBase, offsetsBase, degreeBase);
+          }
+          if (lane_id == 0) v2delete[sz-1] = 0;
 
           if (lane_id == 0) cand1[Cand1Sz[0]++] = plex[--PlexSz[0]];
           __syncwarp();
