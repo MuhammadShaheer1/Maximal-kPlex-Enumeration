@@ -302,21 +302,21 @@ void initializeBNB(int initialN, T_pointers &task_pointers, P_pointers plex_poin
             for (unsigned int w = 0; w < waves; w++)
             {
                 BNB<<<BLK_NUMS, BLK_DIM>>>(w, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, Q_in, Q_out, task_pointers.d_tasks_A, numTasks, 0, tail_out, task_pointers.d_tail_A, lab_out, nei_out, P_out, task_pointers.d_all_labels_A, task_pointers.d_all_neiInG_A, task_pointers.d_all_neiInP_A, plex_count, d_sat, d_commons, d_uni, cycles, d_adj, d_abort);
-                cudaMemcpy(&h_abort, d_abort, sizeof(int), cudaMemcpyDeviceToHost);
+                // cudaMemcpy(&h_abort, d_abort, sizeof(int), cudaMemcpyDeviceToHost);
                 // if (h_abort) 
                 // {
                 //     printf("Maximum Capacity Reached on level %d\n", initialN);
                 //     break;
                 // }
-                cudaMemcpy(&tail, task_pointers.d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
+                // cudaMemcpy(&tail, task_pointers.d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
                 // printf("tail: %d, capacity: %u\n", tail, MAX_CAP/4);
-                if (h_abort)
-                {
+                // if (h_abort)
+                // {
                     // printf("Maximum Capacity Reached on level %d\n", initialN);
                     // printf("Copying Some Tasks To Host Memory with size: %u\n", hostBuf.size);
                     // spillToHost(task_pointers, task_pointers.d_tail_A, hostBuf);
                     // cudaMemset(d_abort, 0, sizeof(int));
-                }
+                // }
             }
             cudaDeviceSynchronize();
             checkCudaError(initialN);
@@ -334,8 +334,8 @@ void initializeBNB(int initialN, T_pointers &task_pointers, P_pointers plex_poin
 
 void initializeBNB2(int initialN, T_pointers &task_pointers, P_pointers plex_pointers, S_pointers subgraph_pointers, unsigned int *d_blk, unsigned int *d_left, unsigned int *d_blk_counter, unsigned int *d_left_counter, uint8_t *commonMtx, unsigned int *plex_count, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* d_abort, HostTaskBuffer& hostBuf, HostTask* h_task_stage, unsigned int* state, unsigned int* res, unsigned int* recExcl, unsigned int* recCand)
 {
-    cudaMemset(d_abort, 0, sizeof(int));
-    int h_abort = 0;
+    // cudaMemset(d_abort, 0, sizeof(int));
+    // int h_abort = 0;
     unsigned int head = 0;
     while (true)
     {
@@ -383,35 +383,16 @@ void initializeBNB2(int initialN, T_pointers &task_pointers, P_pointers plex_poi
 
             for (unsigned int w = 0; w < waves; w++)
             {
-                BNB2<<<BLK_NUMS, BLK_DIM>>>(w, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, Q_in, Q_out, task_pointers.d_tasks_A, numTasks, 0, tail_out, task_pointers.d_tail_A, lab_out, nei_out, P_out, task_pointers.d_all_labels_A, task_pointers.d_all_neiInG_A, task_pointers.d_all_neiInP_A, plex_count, d_sat, d_commons, d_uni, cycles, d_adj, d_abort, state, res, recExcl, recCand);
-                cudaMemcpy(&h_abort, d_abort, sizeof(int), cudaMemcpyDeviceToHost);
-                // if (h_abort) 
-                // {
-                //     printf("Maximum Capacity Reached on level %d\n", initialN);
-                //     break;
-                // }
-                cudaMemcpy(&tail, task_pointers.d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-                // printf("tail: %d, capacity: %u\n", tail, MAX_CAP/4);
-                if (h_abort)
-                {
-                    // printf("Maximum Capacity Reached on level %d\n", initialN);
-                    // printf("Copying Some Tasks To Host Memory with size: %u\n", hostBuf.size);
-                    // spillToHost(task_pointers, task_pointers.d_tail_A, hostBuf);
-                    // cudaMemset(d_abort, 0, sizeof(int));
-                }
+                BNB3<<<BLK_NUMS, BLK_DIM>>>(w, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, Q_in, Q_out, task_pointers.d_tasks_A, numTasks, 0, tail_out, task_pointers.d_tail_A, lab_out, nei_out, P_out, task_pointers.d_all_labels_A, task_pointers.d_all_neiInG_A, task_pointers.d_all_neiInP_A, plex_count, d_sat, d_commons, d_uni, cycles, d_adj, d_abort, state, res, recExcl, recCand);
             }
             cudaDeviceSynchronize();
             checkCudaError(initialN);
-            // if (h_abort) break;
-            // cudaMemcpy(&tail, task_pointers.d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-            // if (tail == 0) break;
             flip = !flip;
         }
-        // if(h_abort) break;
     }
-    cudaMemset(task_pointers.d_tail_A, 0, sizeof(unsigned int));
-    cudaMemset(task_pointers.d_tail_B, 0, sizeof(unsigned int));
-    cudaMemset(task_pointers.d_tail_C, 0, sizeof(unsigned int));
+    // cudaMemset(task_pointers.d_tail_A, 0, sizeof(unsigned int));
+    // cudaMemset(task_pointers.d_tail_B, 0, sizeof(unsigned int));
+    // cudaMemset(task_pointers.d_tail_C, 0, sizeof(unsigned int));
 }
 
 inline int find_pos_sorted(unsigned int* neighbors, unsigned int* offsets, unsigned int u, unsigned int v)
@@ -1200,7 +1181,7 @@ pn = peelG.n;
         // cudaEventRecord(event_start);
 
         initializeBNB2(6, task_pointers, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, plex_count, d_sat, d_commons, d_uni, cycles, d_adj, d_abort2, buf, h_task_stage, d_state2, d_res2, recExcl, recCand);
-        
+        // initializeBNB(6, task_pointers, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, plex_count, d_sat, d_commons, d_uni, cycles, d_adj, d_abort2, buf, h_task_stage);
         // if (h_abort)
         // {
         // printf("Restarting\n");
