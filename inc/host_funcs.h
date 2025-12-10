@@ -261,7 +261,7 @@ void initializeBNB(int initialN, T_pointers &task_pointers, P_pointers plex_poin
         // unsigned int plex;
         cudaMemcpy(&tail, task_pointers.d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
         // cudaMemcpy(&plex, plex_count, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-        // printf("tail: %u, iteration: %d, hostSize: %u\n", tail, initialN, hostBuf.size);
+        // printf("tail: %u\n", tail);
         if (tail == 0)
             break;
 
@@ -302,12 +302,12 @@ void initializeBNB(int initialN, T_pointers &task_pointers, P_pointers plex_poin
             for (unsigned int w = 0; w < waves; w++)
             {
                 BNB<<<BLK_NUMS, BLK_DIM>>>(w, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, Q_in, Q_out, task_pointers.d_tasks_A, numTasks, 0, tail_out, task_pointers.d_tail_A, lab_out, nei_out, P_out, task_pointers.d_all_labels_A, task_pointers.d_all_neiInG_A, task_pointers.d_all_neiInP_A, plex_count, d_sat, d_commons, d_uni, cycles, d_adj, d_abort);
-                // cudaMemcpy(&h_abort, d_abort, sizeof(int), cudaMemcpyDeviceToHost);
-                // if (h_abort) 
-                // {
-                //     printf("Maximum Capacity Reached on level %d\n", initialN);
-                //     break;
-                // }
+                cudaMemcpy(&h_abort, d_abort, sizeof(int), cudaMemcpyDeviceToHost);
+                if (h_abort) 
+                {
+                    printf("Maximum Capacity Reached on level %d\n", initialN);
+                    break;
+                }
                 // cudaMemcpy(&tail, task_pointers.d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
                 // printf("tail: %d, capacity: %u\n", tail, MAX_CAP/4);
                 // if (h_abort)
@@ -320,12 +320,12 @@ void initializeBNB(int initialN, T_pointers &task_pointers, P_pointers plex_poin
             }
             cudaDeviceSynchronize();
             checkCudaError(initialN);
-            // if (h_abort) break;
+            if (h_abort) break;
             // cudaMemcpy(&tail, task_pointers.d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
             // if (tail == 0) break;
             flip = !flip;
         }
-        // if(h_abort) break;
+        if(h_abort) break;
     }
     cudaMemset(task_pointers.d_tail_A, 0, sizeof(unsigned int));
     cudaMemset(task_pointers.d_tail_B, 0, sizeof(unsigned int));
@@ -738,50 +738,7 @@ void decomposableSearch(const graph<int> &g)
 
 /// K-Truss Logic
 
-printf("n: %d, m: %d, q: %d, k: %d\n", pn, peelG.m, lb, k);
-    // vector<pair<int, int>> Q_e;
-    // vector<int> triangles;
-    // for (int i = 0; i < pn; i++)
-    // {
-    //     int begin = peelG.offsets[i];
-    //     int end = peelG.offsets[i+1];
-
-    //     // vector<int> neighbor(peelG.neighbors + begin, peelG.neighbors+end);
-        
-    //     for (int p = begin; p < end; p++)
-    //     {
-    //         int v = peelG.neighbors[p];
-    //         int begin2 = peelG.offsets[v];
-    //         int end2 = peelG.offsets[v+1];
-
-    //         unsigned iu = begin, iv = begin2;
-    //         int common = 0;
-    //         while (iu < end && iv < end2)
-    //         {
-    //             unsigned a = peelG.neighbors[iu];
-    //             unsigned b = peelG.neighbors[iv];
-
-    //             if (a == b)
-    //             {
-    //                 common++;
-    //                 iu++;
-    //                 iv++;
-    //             }
-    //             else if (a < b) iu++;
-    //             else iv++;
-    //         }
-    //         triangles.push_back(common);
-    //         if (i < v && common < (lb - 2 * k)) Q_e.emplace_back(i, v); // q - 2 * k 
-    //     }
-    // }
-
-    // printf("Edges to be pruned: %d\n", Q_e.size());
-
-
-
-    //// PARALLEL
-    // while (true)
-    // {
+// printf("n: %d, m: %d, q: %d, k: %d\n", pn, peelG.m, lb, k);
 
     vector<int> triangles(peelG.m, 0);
     vector<int> counts(pn, 0);
@@ -841,41 +798,10 @@ printf("n: %d, m: %d, q: %d, k: %d\n", pn, peelG.m, lb, k);
         }
     }
 
-    // printf("Edges to be pruned: %d\n", int(Q_e.size()));
-
-// if (Q_e.size() == 0) break;
-
-// printf("Neighbors: ");
-// for (int i = 0; i < peelG.m; i++)
-// {
-//     printf("%d ", peelG.neighbors[i]);
-// }
-// printf("\n");
-
-// printf("Offsets: ");
-// for (int i = 0; i < peelG.n+1; i++)
-// {
-//     printf("%d ", peelG.offsets[i]);
-// }
-// printf("\n");
-
-// printf("Degree: ");
-// for (int i = 0; i < peelG.n; i++)
-// {
-//     printf("%d ", peelG.degree[i]);
-// }
-// printf("\n");
-
-// printf("Before: \n");
-// for (int i = 0; i < Q_e.size(); i++)
-// {
-//     printf("%d %d\n", Q_e[i].first, Q_e[i].second);
-// }
 
 fast_truss_peeling_parallel(peelG.neighbors, peelG.offsets, peelG.degree, Q_e, pn, &peelG.m, triangles);
 peelG = peelGraph(peelG, mark, resNei);
 pn = peelG.n;
-// }
 
 #pragma omp master
     {
@@ -961,6 +887,7 @@ pn = peelG.n;
     unsigned long long* cycles;
     int *d_abort_flag = nullptr;
     int* d_abort2 = nullptr;
+    int* d_abort3 = nullptr;
 
 
     cudaMalloc(&d_res, WARPS * MAX_DEPTH * sizeof(unsigned int));
@@ -1053,6 +980,7 @@ pn = peelG.n;
 
     cudaMalloc(&d_abort_flag, sizeof(int));
     cudaMalloc(&d_abort2, sizeof(int));
+    cudaMalloc(&d_abort3, sizeof(int));
     cudaMemset(d_abort_flag, 0, sizeof(int));
     cudaMemset(d_abort2, 0, sizeof(int));
 
@@ -1076,7 +1004,7 @@ pn = peelG.n;
     // unsigned long long* h_cycles;
     // h_cycles = (unsigned long long *)malloc(40 * sizeof(unsigned long long));
     // printf("Total Iterations: %d\n", (pn/WARPS)+1);
-    int h_abort = 0;
+    int h_abort = 1;
 
     // Total nodes = 27000, warps = 4454, 
 
@@ -1140,53 +1068,36 @@ pn = peelG.n;
         //-----
         // while(h_abort = 1)
         // {
-        cudaMemset(d_abort_flag, 0, sizeof(int));
-        kSearch<<<BLK_NUMS, BLK_DIM>>>(i, plex_pointers, subgraph_pointers, graph_pointers, task_pointers, d_blk_counter, d_res, d_br, d_state, d_len, d_sz, neiInG, neiInP, plex_count, commonMtx, recCand1, recCand2, d_v2delete, d_adj, cycles, d_abort_flag);
-        // kSearch3<<<BLK_NUMS, BLK_DIM>>>(i, plex_pointers, subgraph_pointers, graph_pointers, task_pointers, d_left, d_blk_counter, d_left_counter, d_res, d_br, d_state, d_len, d_sz, neiInG, neiInP, plex_count, commonMtx, recCand1, recCand2, recExcl, recCand, d_v2delete, d_adj, d_sat, d_commons, d_uni);
-        cudaDeviceSynchronize();
-        checkCudaError(5);
+
+
+        // cudaMemset(d_abort2, 0, sizeof(int));
+        // cudaMemset(d_abort_flag, 0, sizeof(int));
+        // kSearch<<<BLK_NUMS, BLK_DIM>>>(i, plex_pointers, subgraph_pointers, graph_pointers, task_pointers, d_blk_counter, d_res, d_br, d_state, d_len, d_sz, neiInG, neiInP, plex_count, commonMtx, recCand1, recCand2, d_v2delete, d_adj, cycles, d_abort_flag, d_abort2);
+        // // // kSearch3<<<BLK_NUMS, BLK_DIM>>>(i, plex_pointers, subgraph_pointers, graph_pointers, task_pointers, d_left, d_blk_counter, d_left_counter, d_res, d_br, d_state, d_len, d_sz, neiInG, neiInP, plex_count, commonMtx, recCand1, recCand2, recExcl, recCand, d_v2delete, d_adj, d_sat, d_commons, d_uni);
+        // cudaDeviceSynchronize();
+        // checkCudaError(5);
 
         
         // cudaMemcpy(&h_abort, d_abort_flag, sizeof(int), cudaMemcpyDeviceToHost);
         // if (h_abort)
         // {
         //     printf("Memory FULL: Maximum Capacity Reached in kSearch\n");
-            // break;
-            // printf("Remaining iterations: %d\n", (pn/warps+1)-i);
-            // printf("Remaining nodes: %d\n", nodes - i * warps);
-            // nodes = nodes - i * warps;
-            // if (change)
-            // {
-            //     blk_nums = int(blk_nums / 2);
-            //     change = false;
-            // }
-            // else 
-            // {
-            // blk_dim = int(blk_dim / 2);
-            // change = true;
-            // }
-            // warps = blk_nums * (blk_dim/32);
-            // i--;
-            // remaining = remaining + (nodes / warps);
-            // printf("blk_num: %d, blk_dim: %d, warps: %d, remaining: %d\n", blk_nums, blk_dim, warps, remaining);
-            // cudaMemset(d_abort_flag, 0, sizeof(int));
-            // continue;
         // }
 
-        // cudaEventRecord(event_stop);
-        // cudaEventSynchronize(event_stop);
-        // time_milli_sec = 0;
-        // cudaEventElapsedTime(&time_milli_sec, event_start, event_stop);
-        // time_6 += time_milli_sec;
-        // cudaEventRecord(event_start);
+        // // cudaEventRecord(event_stop);
+        // // cudaEventSynchronize(event_stop);
+        // // time_milli_sec = 0;
+        // // cudaEventElapsedTime(&time_milli_sec, event_start, event_stop);
+        // // time_6 += time_milli_sec;
+        // // cudaEventRecord(event_start);
 
-        initializeBNB2(6, task_pointers, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, plex_count, d_sat, d_commons, d_uni, cycles, d_adj, d_abort2, buf, h_task_stage, d_state2, d_res2, recExcl, recCand);
-        // initializeBNB(6, task_pointers, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, plex_count, d_sat, d_commons, d_uni, cycles, d_adj, d_abort2, buf, h_task_stage);
+        // // initializeBNB2(6, task_pointers, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, plex_count, d_sat, d_commons, d_uni, cycles, d_adj, d_abort2, buf, h_task_stage, d_state2, d_res2, recExcl, recCand);
+        // initializeBNB(6, task_pointers, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, plex_count, d_sat, d_commons, d_uni, cycles, d_adj, d_abort3, buf, h_task_stage);
         // if (h_abort)
         // {
         // printf("Restarting\n");
-        // cudaMemset(d_abort2, 0, sizeof(int));
-        // kSearch2<<<BLK_NUMS, BLK_DIM>>>(i, plex_pointers, subgraph_pointers, graph_pointers, task_pointers, d_blk_counter, d_res, d_br, d_state, d_len, d_sz, neiInG, neiInP, plex_count, commonMtx, recCand1, recCand2, d_v2delete, d_adj, cycles, d_abort_flag, d_abort2);
+        // // cudaMemset(d_abort2, 0, sizeof(int));
+        // kSearch<<<BLK_NUMS, BLK_DIM>>>(i, plex_pointers, subgraph_pointers, graph_pointers, task_pointers, d_blk_counter, d_res, d_br, d_state, d_len, d_sz, neiInG, neiInP, plex_count, commonMtx, recCand1, recCand2, d_v2delete, d_adj, cycles, d_abort2, d_abort_flag);
         // cudaDeviceSynchronize();
         // checkCudaError(7);
         // cudaMemcpy(&h_abort, d_abort2, sizeof(int), cudaMemcpyDeviceToHost);
@@ -1195,9 +1106,44 @@ pn = peelG.n;
         //     printf("Memory again failed\n");
         //     // break;
         // }
-        // initializeBNB(8, task_pointers, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, plex_count, d_sat, d_commons, d_uni, cycles, d_adj, d_abort2, buf, h_task_stage);
+        // initializeBNB(8, task_pointers, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, plex_count, d_sat, d_commons, d_uni, cycles, d_adj, d_abort3, buf, h_task_stage);
+        // if (h_abort)
+        // {
+        //     printf("Restarting 2\n");
+        //     cudaMemset(d_abort2, 0, sizeof(int));
+        //     kSearch<<<BLK_NUMS, BLK_DIM>>>(i, plex_pointers, subgraph_pointers, graph_pointers, task_pointers, d_blk_counter, d_res, d_br, d_state, d_len, d_sz, neiInG, neiInP, plex_count, commonMtx, recCand1, recCand2, d_v2delete, d_adj, cycles, d_abort_flag, d_abort2);
+        //     cudaDeviceSynchronize();
+        //     checkCudaError(9);
 
+        //     cudaMemcpy(&h_abort, d_abort_flag, sizeof(int), cudaMemcpyDeviceToHost);
+        //     if (h_abort) 
+        //     {
+        //         printf("Memory again failed 2\n");
+        //     }
+
+        //     initializeBNB(10, task_pointers, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, plex_count, d_sat, d_commons, d_uni, cycles, d_adj, d_abort3, buf, h_task_stage);
         // }
+        // }
+        cudaMemset(d_abort_flag, 0, sizeof(int));
+        h_abort = 1;
+        while(h_abort)
+        {
+            cudaMemset(d_abort2, 0, sizeof(int));
+            kSearch<<<BLK_NUMS, BLK_DIM>>>(i, plex_pointers, subgraph_pointers, graph_pointers, task_pointers, d_blk_counter, d_res, d_br, d_state, d_len, d_sz, neiInG, neiInP, plex_count, commonMtx, recCand1, recCand2, d_v2delete, d_adj, cycles, d_abort2, d_abort_flag);
+            cudaDeviceSynchronize();
+            checkCudaError(5);
+            cudaMemcpy(&h_abort, d_abort2, sizeof(int), cudaMemcpyDeviceToHost);
+            if (h_abort)
+            {
+                // printf("Memory FULL: Maximum Capacity Reached in kSearch\n");
+            }
+
+            int* tmp = d_abort_flag;
+            d_abort_flag = d_abort2;
+            d_abort2 = tmp;
+
+            initializeBNB(6, task_pointers, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, plex_count, d_sat, d_commons, d_uni, cycles, d_adj, d_abort3, buf, h_task_stage);
+        }
         
         // }
         cudaMemset(d_blk_counter, 0, WARPS * sizeof(unsigned int));
