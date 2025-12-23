@@ -5,7 +5,7 @@
 #define BLK_DIM 1024
 #define WARPS_EACH_BLK (BLK_DIM/32)
 #define WARPS (BLK_NUMS*WARPS_EACH_BLK)
-#define MAX_BLK_SIZE 1024
+#define MAX_BLK_SIZE 1024 // Maximum size of my neighborhood 
 #define AVG_DEGREE 200
 #define AVG_LEFT_DEGREE 200
 #define MAX_CAP 2048 * 2048 

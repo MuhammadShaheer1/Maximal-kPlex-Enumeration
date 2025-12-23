@@ -476,59 +476,59 @@ void fast_truss_peeling(unsigned int* neighbors, unsigned int* offsets, unsigned
             degrees[v]--;
         }
 
-    unsigned int iu = offsets[u], eu = offsets[u+1];
-    unsigned int iv = offsets[v], ev = offsets[v+1];
+        unsigned int iu = offsets[u], eu = offsets[u+1];
+        unsigned int iv = offsets[v], ev = offsets[v+1];
 
-    while (iu < eu && iv < ev)
-    {
-        while (iu < eu && dead[iu]) ++iu;
-        while (iv < eu && dead[iv]) ++iv;
-
-        if (iu >= eu || iv >= ev) break;
-
-        unsigned int a = neighbors[iu];
-        unsigned int b = neighbors[iv];
-
-        if (a == b)
+        while (iu < eu && iv < ev)
         {
-            unsigned int w = a;
+            while (iu < eu && dead[iu]) ++iu;
+            while (iv < ev && dead[iv]) ++iv;
 
-            int pos_uw = iu;
-            int pos_vw = iv;
+            if (iu >= eu || iv >= ev) break;
 
-            if (!dead[pos_uw])
+            unsigned int a = neighbors[iu];
+            unsigned int b = neighbors[iv];
+
+            if (a == b)
             {
-                int prev = triangles[pos_uw];
-                if (prev > 0)
-                {
-                    int now = prev - 1;
-                    triangles[pos_uw] = now;
-                    if (prev == (lb - 2 * k)){
-                        Q_e.emplace_back(u, w);
-                    }
-                }
-            }
+                unsigned int w = a;
 
-            if (!dead[pos_vw])
-            {
-                int prev = triangles[pos_vw];
-                if (prev > 0)
+                int pos_uw = iu;
+                int pos_vw = iv;
+
+                if (!dead[pos_uw])
                 {
-                    int now = prev - 1;
-                    triangles[pos_vw] = now;
-                    if (prev == (lb - 2 * k))
+                    int prev = triangles[pos_uw];
+                    if (prev > 0)
                     {
-                        Q_e.emplace_back(v, w);
+                        int now = prev - 1;
+                        triangles[pos_uw] = now;
+                        if (prev == (lb - 2 * k)){
+                            Q_e.emplace_back(u, w);
+                        }
                     }
                 }
+
+                if (!dead[pos_vw])
+                {
+                    int prev = triangles[pos_vw];
+                    if (prev > 0)
+                    {
+                        int now = prev - 1;
+                        triangles[pos_vw] = now;
+                        if (prev == (lb - 2 * k))
+                        {
+                            Q_e.emplace_back(v, w);
+                        }
+                    }
+                }
+                iu++;
+                iv++;
             }
-            iu++;
-            iv++;
+            else if (a < b) iu++;
+            else iv++;
         }
-        else if (a < b) iu++;
-        else iv++;
     }
-}
 
     unsigned int write = 0;
     for (int u = 0; u < n; u++)
@@ -540,8 +540,9 @@ void fast_truss_peeling(unsigned int* neighbors, unsigned int* offsets, unsigned
         {
             if (!dead[i])
             {
-                neighbors[write++] = neighbors[i];
+                neighbors[write] = neighbors[i];
                 triangles[write] = triangles[i];
+                ++write;
             }
         }
     }
@@ -612,8 +613,8 @@ void fast_truss_peeling_parallel(unsigned int* neighbors, unsigned int* offsets,
             unsigned int eu = offsets[u+1];
             unsigned int iv = offsets[v];
             unsigned int ev = offsets[v+1];
-
-            while (iu >= eu && iv >= ev)
+            // Reconsider it
+            while (iu < eu && iv < ev)
             {
                 while (iu < eu && dead[iu]) iu++;
                 while (iv < ev && dead[iv]) iv++;
@@ -698,6 +699,9 @@ void fast_truss_peeling_parallel(unsigned int* neighbors, unsigned int* offsets,
     triangles.resize(write);
 }
 
+
+
+
 void initHostTaskBuffer(HostTaskBuffer &buf, unsigned int capacity)
 {
     buf.capacity = capacity;
@@ -740,6 +744,8 @@ void decomposableSearch(const graph<int> &g)
 
 // printf("n: %d, m: %d, q: %d, k: %d\n", pn, peelG.m, lb, k);
 
+    if (pn < 100000)
+    {
     vector<int> triangles(peelG.m, 0);
     vector<int> counts(pn, 0);
 
@@ -798,13 +804,14 @@ void decomposableSearch(const graph<int> &g)
         }
     }
 
-
-fast_truss_peeling_parallel(peelG.neighbors, peelG.offsets, peelG.degree, Q_e, pn, &peelG.m, triangles);
+// fast_truss_peeling_parallel(peelG.neighbors, peelG.offsets, peelG.degree, Q_e, pn, &peelG.m, triangles);
+fast_truss_peeling(peelG.neighbors, peelG.offsets, peelG.degree, Q_e, pn, &peelG.m, triangles);
 peelG = peelGraph(peelG, mark, resNei);
 pn = peelG.n;
+    }
 
-#pragma omp master
-    {
+// #pragma omp master
+//     {
         ListLinearHeap<int> *linear_heap = new ListLinearHeap<int>(pn, pn - 1);
         linear_heap->init(pn, pn - 1);
         for (int i = 0; i < pn; ++i)
@@ -828,7 +835,7 @@ pn = peelG.n;
             }
         }
         delete linear_heap;
-    }
+    // }
 
     cudaEventRecord(event_stop);
     cudaEventSynchronize(event_stop);
@@ -1059,71 +1066,7 @@ pn = peelG.n;
         cudaDeviceSynchronize();
         checkCudaError(4);
 
-        // cudaEventRecord(event_stop);
-        // cudaEventSynchronize(event_stop);
-        // time_milli_sec = 0;
-        // cudaEventElapsedTime(&time_milli_sec, event_start, event_stop);
-        // time_5 += time_milli_sec;
-        // cudaEventRecord(event_start);
-        //-----
-        // while(h_abort = 1)
-        // {
-
-
-        // cudaMemset(d_abort2, 0, sizeof(int));
-        // cudaMemset(d_abort_flag, 0, sizeof(int));
-        // kSearch<<<BLK_NUMS, BLK_DIM>>>(i, plex_pointers, subgraph_pointers, graph_pointers, task_pointers, d_blk_counter, d_res, d_br, d_state, d_len, d_sz, neiInG, neiInP, plex_count, commonMtx, recCand1, recCand2, d_v2delete, d_adj, cycles, d_abort_flag, d_abort2);
-        // // // kSearch3<<<BLK_NUMS, BLK_DIM>>>(i, plex_pointers, subgraph_pointers, graph_pointers, task_pointers, d_left, d_blk_counter, d_left_counter, d_res, d_br, d_state, d_len, d_sz, neiInG, neiInP, plex_count, commonMtx, recCand1, recCand2, recExcl, recCand, d_v2delete, d_adj, d_sat, d_commons, d_uni);
-        // cudaDeviceSynchronize();
-        // checkCudaError(5);
-
         
-        // cudaMemcpy(&h_abort, d_abort_flag, sizeof(int), cudaMemcpyDeviceToHost);
-        // if (h_abort)
-        // {
-        //     printf("Memory FULL: Maximum Capacity Reached in kSearch\n");
-        // }
-
-        // // cudaEventRecord(event_stop);
-        // // cudaEventSynchronize(event_stop);
-        // // time_milli_sec = 0;
-        // // cudaEventElapsedTime(&time_milli_sec, event_start, event_stop);
-        // // time_6 += time_milli_sec;
-        // // cudaEventRecord(event_start);
-
-        // // initializeBNB2(6, task_pointers, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, plex_count, d_sat, d_commons, d_uni, cycles, d_adj, d_abort2, buf, h_task_stage, d_state2, d_res2, recExcl, recCand);
-        // initializeBNB(6, task_pointers, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, plex_count, d_sat, d_commons, d_uni, cycles, d_adj, d_abort3, buf, h_task_stage);
-        // if (h_abort)
-        // {
-        // printf("Restarting\n");
-        // // cudaMemset(d_abort2, 0, sizeof(int));
-        // kSearch<<<BLK_NUMS, BLK_DIM>>>(i, plex_pointers, subgraph_pointers, graph_pointers, task_pointers, d_blk_counter, d_res, d_br, d_state, d_len, d_sz, neiInG, neiInP, plex_count, commonMtx, recCand1, recCand2, d_v2delete, d_adj, cycles, d_abort2, d_abort_flag);
-        // cudaDeviceSynchronize();
-        // checkCudaError(7);
-        // cudaMemcpy(&h_abort, d_abort2, sizeof(int), cudaMemcpyDeviceToHost);
-        // if (h_abort) 
-        // {
-        //     printf("Memory again failed\n");
-        //     // break;
-        // }
-        // initializeBNB(8, task_pointers, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, plex_count, d_sat, d_commons, d_uni, cycles, d_adj, d_abort3, buf, h_task_stage);
-        // if (h_abort)
-        // {
-        //     printf("Restarting 2\n");
-        //     cudaMemset(d_abort2, 0, sizeof(int));
-        //     kSearch<<<BLK_NUMS, BLK_DIM>>>(i, plex_pointers, subgraph_pointers, graph_pointers, task_pointers, d_blk_counter, d_res, d_br, d_state, d_len, d_sz, neiInG, neiInP, plex_count, commonMtx, recCand1, recCand2, d_v2delete, d_adj, cycles, d_abort_flag, d_abort2);
-        //     cudaDeviceSynchronize();
-        //     checkCudaError(9);
-
-        //     cudaMemcpy(&h_abort, d_abort_flag, sizeof(int), cudaMemcpyDeviceToHost);
-        //     if (h_abort) 
-        //     {
-        //         printf("Memory again failed 2\n");
-        //     }
-
-        //     initializeBNB(10, task_pointers, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, plex_count, d_sat, d_commons, d_uni, cycles, d_adj, d_abort3, buf, h_task_stage);
-        // }
-        // }
         cudaMemset(d_abort_flag, 0, sizeof(int));
         h_abort = 1;
         while(h_abort)
