@@ -9,7 +9,7 @@
 //#include "device_funcs.h"
 
 void usage(){
-    fprintf(stderr,"usage : ./PlexEnum <dataset> -k <k> -q <q>\n");
+    fprintf(stderr,"usage : ./PlexEnum <dataset> -k <k> -q <q> -t <thres> -tr <truss>\n");
 }
 
 int check_inc(int i, int max){
@@ -37,13 +37,21 @@ int main(int argc, char*argv[])
             i = check_inc(i, argc);
             lb = atoi(argv[i]);
         }
+        else if(!strcmp(argv[i],"-t")){
+            i = check_inc(i, argc);
+            thres = stod(argv[i]);
+        }
+        else if(!strcmp(argv[i],"-tr")){
+            i = check_inc(i, argc);
+            truss = atoi(argv[i]);
+        }
         else {
             usage();
             exit(1);
         }
         i++;
     }
-    printf("k=%d,q=%d\n",k,lb);
+    printf("k=%d,q=%d,thres=%f, truss: %d\n",k,lb, thres, truss);
     bd = lb-k; //lb = q
     graph<intT> g(argv[1]);
     //g.printGraph();

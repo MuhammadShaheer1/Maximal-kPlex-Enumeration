@@ -47,6 +47,7 @@ typedef struct P_pointers{
     int k;
     int lb;
     int bd; //q-k
+    float thres;
 } P_pointers;
 
 typedef struct G_pointers{

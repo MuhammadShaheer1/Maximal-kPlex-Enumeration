@@ -1194,7 +1194,7 @@ __device__ void recoverCand23(int lane_id, int n, unsigned int* cand2, unsigned 
   }
 }
 
-__device__ void enqueue_exclude_child(int lane_id, int idx, unsigned int* local_n, unsigned int* plex, unsigned int PlexSz, unsigned int* cand, unsigned int CandSz, unsigned int* excl, unsigned int ExclSz, int minIndex, Task* tasks, Task* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, uint16_t* neiInG, uint16_t* neiInP, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase, int* abort)
+__device__ void enqueue_exclude_child(int lane_id, int idx, unsigned int* local_n, unsigned int* plex, unsigned int PlexSz, unsigned int* cand, unsigned int CandSz, unsigned int* excl, unsigned int ExclSz, int minIndex, Task* tasks, Task* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, uint16_t* neiInG, uint16_t* neiInP, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase, int* abort, unsigned int* global_count)
 {
     uint8_t* labels = d_all_labels;
     uint16_t* all_neiInG = d_all_neiInG;
@@ -1265,11 +1265,12 @@ __device__ void enqueue_exclude_child(int lane_id, int idx, unsigned int* local_
     nt2.labels = childLabels2;
     nt2.neiInG = childNeiInG2;
     nt2.neiInP = childNeiInP2;
+    atomicAdd(&global_count[0], 1);
     }
 }
 
 
-__device__ void enqueue_include_child(int lane_id, int idx, int k, int lb, unsigned int* local_n, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase, uint8_t* commonMtx, unsigned int* plex, unsigned int& PlexSz, unsigned int* cand, unsigned int& CandSz, unsigned int* excl, unsigned int& ExclSz, uint16_t* neiInP, uint16_t* neiInG, int minIndex, Task* tasks, Task* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, unsigned long long* cycles, uint32_t* adjList, uint16_t* local_sat, int* abort)
+__device__ void enqueue_include_child(int lane_id, int idx, int k, int lb, unsigned int* local_n, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase, uint8_t* commonMtx, unsigned int* plex, unsigned int& PlexSz, unsigned int* cand, unsigned int& CandSz, unsigned int* excl, unsigned int& ExclSz, uint16_t* neiInP, uint16_t* neiInG, int minIndex, Task* tasks, Task* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, unsigned long long* cycles, uint32_t* adjList, uint16_t* local_sat, int* abort, unsigned int* global_count)
 {
   uint8_t* labels = d_all_labels;
   uint16_t* all_neiInG = d_all_neiInG;
@@ -1457,16 +1458,17 @@ __device__ void enqueue_include_child(int lane_id, int idx, int k, int lb, unsig
       nt.labels = childLabels;
       nt.neiInG = childNeiInG;
       nt.neiInP = childNeiInP;
+      atomicAdd(&global_count[0], 1);
     }        
   }
   __syncwarp();
 }
 
-__device__ void branchInCand2(int warp_id, int lane_id, int minIndex, int idx, int k, int lb, unsigned int PlexSz, unsigned int CandSz, unsigned int ExclSz, unsigned int* local_n, Task* tasks, Task* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, unsigned int* plex, unsigned int* cand, unsigned int* excl, uint16_t* neiInG, uint16_t* neiInP, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase,uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, uint8_t* commonMtx, unsigned long long* cycles, uint32_t* adjList, uint16_t* local_sat, int* abort)
+__device__ void branchInCand2(int warp_id, int lane_id, int minIndex, int idx, int k, int lb, unsigned int PlexSz, unsigned int CandSz, unsigned int ExclSz, unsigned int* local_n, Task* tasks, Task* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, unsigned int* plex, unsigned int* cand, unsigned int* excl, uint16_t* neiInG, uint16_t* neiInP, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase,uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, uint8_t* commonMtx, unsigned long long* cycles, uint32_t* adjList, uint16_t* local_sat, int* abort, unsigned int* global_count)
 {
-  enqueue_exclude_child(lane_id, idx, local_n, plex, PlexSz, cand, CandSz, excl, ExclSz, minIndex, tasks, global_tasks, tailPtr, global_tail, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, abort);  
+  enqueue_exclude_child(lane_id, idx, local_n, plex, PlexSz, cand, CandSz, excl, ExclSz, minIndex, tasks, global_tasks, tailPtr, global_tail, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, abort, global_count);  
   if (abort[0]) return;
-  enqueue_include_child(lane_id, idx, k, lb, local_n, neighborsBase, offsetsBase, degreeBase, commonMtx, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, minIndex, tasks, global_tasks, tailPtr, global_tail, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, cycles, adjList, local_sat, abort);
+  enqueue_include_child(lane_id, idx, k, lb, local_n, neighborsBase, offsetsBase, degreeBase, commonMtx, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, minIndex, tasks, global_tasks, tailPtr, global_tail, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, cycles, adjList, local_sat, abort, global_count);
 }
 
 __device__ void initializePCX(int lane_id, const uint8_t* __restrict__ labelsBase, unsigned int n, unsigned int* __restrict__ plex, unsigned int* __restrict__ cand, unsigned int* __restrict__ excl)
@@ -1511,7 +1513,7 @@ __device__ void initializePCX(int lane_id, const uint8_t* __restrict__ labelsBas
 }
 
 
-__global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsigned int* d_left, unsigned int* d_blk_counter, unsigned int* d_left_counter, uint8_t* commonMtx, Task* tasks, Task* outTasks, Task* global_tasks, unsigned int N, unsigned int head, unsigned int* tailPtr, unsigned int* global_tail, uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, unsigned int* plex_count, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* abort)
+__global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsigned int* d_left, unsigned int* d_blk_counter, unsigned int* d_left_counter, uint8_t* commonMtx, Task* tasks, Task* outTasks, Task* global_tasks, unsigned int N, unsigned int head, unsigned int* tailPtr, unsigned int* global_tail, uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, unsigned int* plex_count, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* abort, unsigned int *global_count)
 {
   
   unsigned int global_index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1658,7 +1660,7 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
     pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
          
     // if (lane_id == 0) printf("Pivot: %d\n", pivot);
-    branchInCand2(warp_id, lane_id, pivot, t.idx, k, q, PlexSz, CandSz, ExclSz, &n, outTasks, global_tasks, tailPtr, global_tail, plex, cand, excl, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, commonMtxBase, cycles, adjList, local_sat, abort);
+    branchInCand2(warp_id, lane_id, pivot, t.idx, k, q, PlexSz, CandSz, ExclSz, &n, outTasks, global_tasks, tailPtr, global_tail, plex, cand, excl, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, commonMtxBase, cycles, adjList, local_sat, abort, global_count);
     return;
   }
 
@@ -1717,7 +1719,7 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
     return;
   }
 
-  branchInCand2(warp_id, lane_id, pivot, t.idx, k, q, PlexSz, CandSz, ExclSz, &n, outTasks, global_tasks, tailPtr, global_tail, plex, cand, excl, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, commonMtxBase, cycles, adjList, local_sat, abort);
+  branchInCand2(warp_id, lane_id, pivot, t.idx, k, q, PlexSz, CandSz, ExclSz, &n, outTasks, global_tasks, tailPtr, global_tail, plex, cand, excl, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, commonMtxBase, cycles, adjList, local_sat, abort, global_count);
   __syncwarp();
 }
 
@@ -1850,7 +1852,7 @@ __global__ void buildCommonMtx(int idx, P_pointers p, S_pointers s, G_pointers g
   // }
 }
 
-__global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_pointers t, unsigned int* d_blk_counter, unsigned int* d_res, unsigned int* d_br, unsigned int* d_state, unsigned int* d_len, unsigned int* d_sz, uint16_t* neiInG, uint16_t* neiInP, unsigned int* plex_count, uint8_t* commonMtx, unsigned int* recCand1, unsigned int* recCand2, unsigned int* d_v2delete, uint32_t* d_adj, unsigned long long* cycles, int* abort_flag, int* d_abort)
+__global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_pointers t, unsigned int* d_blk_counter, unsigned int* d_res, unsigned int* d_br, unsigned int* d_state, unsigned int* d_len, unsigned int* d_sz, uint16_t* neiInG, uint16_t* neiInP, unsigned int* plex_count, uint8_t* commonMtx, unsigned int* recCand1, unsigned int* recCand2, unsigned int* d_v2delete, uint32_t* d_adj, unsigned long long* cycles, int* abort_flag, int* d_abort, unsigned int *global_count)
 {
   unsigned int global_index = blockIdx.x * blockDim.x + threadIdx.x;
   unsigned int warp_id = (global_index / 32);
@@ -1863,6 +1865,7 @@ __global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_poi
 
   int k = p.k;
   int q = p.lb;
+  float thres = p.thres;
 
   unsigned int* counterBase = d_blk_counter + warp_id;
 
@@ -2062,7 +2065,7 @@ __global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_poi
             nt.labels = newLabels;
             nt.neiInG = newNeiInG;
             nt.neiInP = newNeiInP;
-          
+            atomicAdd(&global_count[0], 1);
           // __syncwarp();
           // if (warp_id == 0)
           // {
@@ -2077,7 +2080,7 @@ __global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_poi
           // }
         }
         __syncwarp();
-        if (pos+1 > (MAX_CAP/4)-WARPS)
+        if (pos+1 > (MAX_CAP*thres)-WARPS)
         {
           // if(lane_id == 0) printf("Maximum Capacity Reached in kSearch\n");
           // atomicExch(abort_flag, 1);
@@ -2374,10 +2377,11 @@ __global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_poi
             nt.labels = newLabels;
             nt.neiInG = newNeiInG;
             nt.neiInP = newNeiInP;
+            atomicAdd(&global_count[0], 1);
           }
           __syncwarp();
 
-          if (pos+1 > (MAX_CAP/4)-WARPS)
+          if (pos+1 > (MAX_CAP*thres)-WARPS)
           {
             // if(lane_id == 0) printf("Maximum Capacity Reached in kSearch\n");
             // atomicExch(abort_flag, 1);
@@ -3020,7 +3024,7 @@ __global__ void kSearch2(int idx, P_pointers p, S_pointers s, G_pointers g, T_po
   }
 }
 
-__global__ void kSearch3(int idx, P_pointers p, S_pointers s, G_pointers g, T_pointers t, unsigned int* d_left,  unsigned int* d_blk_counter, unsigned int* d_left_counter, unsigned int* d_res, unsigned int* d_br, unsigned int* d_state, unsigned int* d_len, unsigned int* d_sz, uint16_t* neiInG, uint16_t* neiInP, unsigned int* plex_count, uint8_t* commonMtx, unsigned int* recCand1, unsigned int* recCand2, unsigned int* recExcl, unsigned int* recCand, unsigned int* d_v2delete, uint32_t* d_adj, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni)
+__global__ void kSearch3(int idx, P_pointers p, S_pointers s, G_pointers g, T_pointers t, unsigned int* d_left,  unsigned int* d_blk_counter, unsigned int* d_left_counter, unsigned int* d_res, unsigned int* d_br, unsigned int* d_state, unsigned int* d_len, unsigned int* d_sz, uint16_t* neiInG, uint16_t* neiInP, unsigned int* plex_count, uint8_t* commonMtx, unsigned int* recCand1, unsigned int* recCand2, unsigned int* recExcl, unsigned int* recCand, unsigned int* d_v2delete, uint32_t* d_adj, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned int *global_count)
 {
   unsigned int global_index = blockIdx.x * blockDim.x + threadIdx.x;
   unsigned int warp_id = (global_index / 32);
@@ -3029,7 +3033,35 @@ __global__ void kSearch3(int idx, P_pointers p, S_pointers s, G_pointers g, T_po
 
   // if (warp_id != 10) return;
 
-  if ((warp_id+WARPS*idx) >= (g.n-p.lb+2)) return;
+  if ((warp_id+WARPS*idx) >= (g.n-p.lb+2)) 
+  {
+    if (lane_id == 0) atomicAdd(&global_count[0], 1);
+    return;
+  }
+
+  // if ((warp_id+WARPS*idx) == 4233 || (warp_id+WARPS*idx) == 4228 || (warp_id+WARPS*idx) == 4229 || (warp_id+WARPS*idx) ==  4234 || (warp_id+WARPS*idx) == 4242)
+  // {
+  //   if (lane_id == 0) atomicAdd(&global_count[0], 1);
+  //   return;
+  // }
+
+  // if ((warp_id+WARPS*idx) == 4243 || (warp_id+WARPS*idx) == 4255 || (warp_id+WARPS*idx) == 4190 || (warp_id+WARPS*idx) == 4189 || (warp_id+WARPS*idx) == 4193)
+  // {
+  //   if (lane_id == 0) atomicAdd(&global_count[0], 1);
+  //   return;
+  // }
+
+  // if ((warp_id+WARPS*idx) == 4172 || (warp_id+WARPS*idx) == 4153 || (warp_id+WARPS*idx) == 4237 || (warp_id+WARPS*idx) == 4250 || (warp_id+WARPS*idx) == 4244)
+  // {
+  //   if (lane_id == 0) atomicAdd(&global_count[0], 1);
+  //   return;
+  // }
+
+  // if ((warp_id+WARPS*idx) == 4254 || (warp_id+WARPS*idx) == 4248 || (warp_id+WARPS*idx) == 4258 || (warp_id+WARPS*idx) == 4240 || (warp_id+WARPS*idx) == 4253)
+  // {
+  //   if (lane_id == 0) atomicAdd(&global_count[0], 1);
+  //   return;
+  // }
 
   // if (warp_id+WARPS*idx != 4111) return;
 
@@ -3038,8 +3070,11 @@ __global__ void kSearch3(int idx, P_pointers p, S_pointers s, G_pointers g, T_po
 
   unsigned int* counterBase = d_blk_counter + warp_id;
 
-  if (counterBase[0] < q) return;
-  
+  if (counterBase[0] < q) 
+  {
+    if (lane_id == 0) atomicAdd(&global_count[0], 1);
+    return;
+  }
 
   unsigned int* degreeBase = s.degree + warp_id * MAX_BLK_SIZE;
   unsigned int* offsetsBase = s.offsets + warp_id * MAX_BLK_SIZE;
@@ -4363,7 +4398,8 @@ __global__ void kSearch3(int idx, P_pointers p, S_pointers s, G_pointers g, T_po
           continue;
     }
   }
-  // if (lane_id == 0) printf("warp_id: %d, maximal k-plexes: %d\n", warp_id, plex_count[0]);
+  // if (lane_id == 0) atomicAdd(&global_count[0], 1);
+  // if (lane_id == 0) printf("%d warps completed out of 4544 total warps with warp_id: %d\n", global_count[0], warp_id+WARPS*idx);
 }
 
 __global__ void BNB2(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsigned int* d_left, unsigned int* d_blk_counter, unsigned int* d_left_counter, uint8_t* commonMtx, Task* tasks, Task* outTasks, Task* global_tasks, unsigned int N, unsigned int head, unsigned int* tailPtr, unsigned int* global_tail, uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, unsigned int* plex_count, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* d_abort, unsigned int* d_state, unsigned int* d_res, unsigned int* recExcl, unsigned int* recCand)

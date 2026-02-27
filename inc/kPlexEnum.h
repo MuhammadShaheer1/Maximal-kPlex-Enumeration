@@ -19,5 +19,7 @@ using VtxSet = RandSet<int>;
 
 int k;
 int lb;
+float thres;
+int truss;
 int bd;
 #endif // KPLEX_ENUM_H
