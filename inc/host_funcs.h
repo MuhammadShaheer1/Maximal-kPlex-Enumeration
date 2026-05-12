@@ -1004,11 +1004,19 @@ pn = peelG.n;
     cudaMalloc(&task_pointers.d_all_neiInP_C, capacity2 * MAX_BLK_SIZE * sizeof(uint16_t));
     cudaMalloc(&task_pointers.d_tail_C, sizeof(unsigned int));
 
+    allocate_tiny_task_queues(task_pointers);
+
     cudaMalloc(&d_abort_flag, sizeof(int));
     cudaMalloc(&d_abort2, sizeof(int));
     cudaMalloc(&d_abort3, sizeof(int));
     cudaMemset(d_abort_flag, 0, sizeof(int));
     cudaMemset(d_abort2, 0, sizeof(int));
+
+    unsigned int* d_resume_checked;
+    unsigned int* d_resume_errors;
+
+    chkerr(cudaMalloc(&d_resume_checked, sizeof(unsigned int)));
+    chkerr(cudaMalloc(&d_resume_errors, sizeof(unsigned int)));
 
     graph<intT> subg;
 
@@ -1106,6 +1114,283 @@ pn = peelG.n;
             // time_2 += time_milli_sec;
             // cudaEventRecord(event_start);
 
+            unsigned int *d_debug_expanded, *d_debug_spilled;
+            cudaMalloc(&d_debug_expanded, sizeof(unsigned int));
+            cudaMalloc(&d_debug_spilled, sizeof(unsigned int));
+            cudaMemset(d_debug_expanded, 0, sizeof(unsigned int));
+            cudaMemset(d_debug_spilled, 0, sizeof(unsigned int));
+
+            unsigned int h_debug_tail_A = 0;
+
+            chkerr(cudaMemcpy(&h_debug_tail_A,
+                  task_pointers.d_tail_A,
+                  sizeof(unsigned int),
+                  cudaMemcpyDeviceToHost));
+
+            unsigned int debug_tasks = min(h_debug_tail_A, 64u);
+
+            chkerr(cudaMemset(task_pointers.d_tiny_tail_A, 0, sizeof(unsigned int)));
+            chkerr(cudaMemset(task_pointers.d_delta_tail_A, 0, sizeof(unsigned int)));
+
+            printf("Launching BNB_localDFS_debug with %u tasks\n", debug_tasks);
+            fflush(stdout);
+
+            BNB_localDFS_debug<<<debug_tasks, 32>>>(
+                subgraph_pointers,
+                task_pointers.d_tasks_A,
+                debug_tasks,
+                0,
+                task_pointers.d_tiny_tasks_A,
+                task_pointers.d_tiny_tail_A,
+                TINY_SMALL_CAP,
+                task_pointers.d_delta_log_A,
+                task_pointers.d_delta_tail_A,
+                DELTA_SMALL_CAP,
+                d_debug_expanded,
+                d_debug_spilled
+            );
+
+            cudaError_t launch_err = cudaGetLastError();
+            if (launch_err != cudaSuccess) {
+                printf("BNB_localDFS_debug launch error: %s\n",
+                    cudaGetErrorString(launch_err));
+                fflush(stdout);
+                exit(1);
+            }
+
+            cudaError_t sync_err = cudaDeviceSynchronize();
+            if (sync_err != cudaSuccess) {
+                printf("BNB_localDFS_debug sync error: %s\n",
+                    cudaGetErrorString(sync_err));
+                fflush(stdout);
+                exit(1);
+            }
+
+            printf("Finished BNB_localDFS_debug\n");
+            fflush(stdout);
+
+            unsigned int h_debug_expanded = 0;
+            unsigned int h_debug_spilled = 0;
+
+            cudaMemcpy(&h_debug_expanded, d_debug_expanded, sizeof(unsigned int), cudaMemcpyDeviceToHost);
+            cudaMemcpy(&h_debug_spilled, d_debug_spilled, sizeof(unsigned int), cudaMemcpyDeviceToHost);
+
+           unsigned int h_tiny_tail_A = 0;
+            unsigned int h_delta_tail_A = 0;
+
+            chkerr(cudaMemcpy(&h_tiny_tail_A,
+                            task_pointers.d_tiny_tail_A,
+                            sizeof(unsigned int),
+                            cudaMemcpyDeviceToHost));
+
+            chkerr(cudaMemcpy(&h_delta_tail_A,
+                            task_pointers.d_delta_tail_A,
+                            sizeof(unsigned int),
+                            cudaMemcpyDeviceToHost));
+
+            printf("BNB_localDFS_debug tasks=%u expanded=%u spilled=%u tiny_tail=%u delta_tail=%u\n",
+                debug_tasks,
+                h_debug_expanded,
+                h_debug_spilled,
+                h_tiny_tail_A,
+                h_delta_tail_A);
+
+            if (h_tiny_tail_A > 0) {
+                TinyTask h_tt;
+
+                cudaMemcpy(&h_tt,
+                        task_pointers.d_tiny_tasks_A,
+                        sizeof(TinyTask),
+                        cudaMemcpyDeviceToHost);
+
+                printf("First TinyTask: idx=%d parent=%u plex=%u cand=%u excl=%u log_off=%u log_len=%u depth=%u hash=%llu\n",
+                        h_tt.idx,
+                        h_tt.parent_task_pos,
+                        h_tt.plex_sz,
+                        h_tt.cand_sz,
+                        h_tt.excl_sz,
+                        h_tt.log_off,
+                        h_tt.log_len,
+                        h_tt.depth,
+                        (unsigned long long)h_tt.state_hash);
+
+                Delta h_delta[LOCAL_BNB_DEPTH];
+
+                cudaMemcpy(h_delta,
+                        task_pointers.d_delta_log_A + h_tt.log_off,
+                        h_tt.log_len * sizeof(Delta),
+                        cudaMemcpyDeviceToHost);
+
+                for (unsigned int i = 0; i < h_tt.log_len; ++i) {
+                    printf("  delta[%u]: v=%u old=%u new=%u neiInP_delta=%d neiInG_delta=%d\n",
+                        i,
+                        h_delta[i].v,
+                        h_delta[i].old_label,
+                        h_delta[i].new_label,
+                        h_delta[i].neiInP_delta,
+                        h_delta[i].neiInG_delta);
+                }
+            }
+
+            chkerr(cudaMemset(d_resume_checked, 0, sizeof(unsigned int)));
+            chkerr(cudaMemset(d_resume_errors, 0, sizeof(unsigned int)));
+
+            if (h_tiny_tail_A > 0) {
+                printf("Launching resumeTinyTasks_debug with %u tiny tasks\n", h_tiny_tail_A);
+
+                resumeTinyTasks_debug<<<h_tiny_tail_A, 32>>>(
+                    subgraph_pointers,
+                    task_pointers.d_tasks_A,
+                    task_pointers.d_tiny_tasks_A,
+                    h_tiny_tail_A,
+                    task_pointers.d_delta_log_A,
+                    d_resume_checked,
+                    d_resume_errors
+                );
+
+                chkerr(cudaDeviceSynchronize());
+                checkCudaError(777);
+            }
+
+            unsigned int h_resume_checked = 0;
+            unsigned int h_resume_errors = 0;
+
+            cudaMemcpy(&h_resume_checked,
+                    d_resume_checked,
+                    sizeof(unsigned int),
+                    cudaMemcpyDeviceToHost);
+
+            cudaMemcpy(&h_resume_errors,
+                    d_resume_errors,
+                    sizeof(unsigned int),
+                    cudaMemcpyDeviceToHost);
+
+            printf("resumeTinyTasks_debug checked=%u errors=%u\n",
+                h_resume_checked,
+                h_resume_errors);
+
+            chkerr(cudaMemset(task_pointers.d_tiny_tail_B, 0, sizeof(unsigned int)));
+            chkerr(cudaMemset(task_pointers.d_delta_tail_B, 0, sizeof(unsigned int)));
+
+            unsigned int* d_continue_checked;
+            unsigned int* d_continue_errors;
+            unsigned int* d_continue_spilled;
+
+            chkerr(cudaMalloc(&d_continue_checked, sizeof(unsigned int)));
+            chkerr(cudaMalloc(&d_continue_errors, sizeof(unsigned int)));
+            chkerr(cudaMalloc(&d_continue_spilled, sizeof(unsigned int)));
+
+            chkerr(cudaMemset(d_continue_checked, 0, sizeof(unsigned int)));
+            chkerr(cudaMemset(d_continue_errors, 0, sizeof(unsigned int)));
+            chkerr(cudaMemset(d_continue_spilled, 0, sizeof(unsigned int)));
+
+            if (h_tiny_tail_A > 0) {
+                printf("Launching resumeTinyTasks_continue_debug with %u tiny tasks\n",
+                    h_tiny_tail_A);
+
+                resumeTinyTasks_continue_debug<<<h_tiny_tail_A, 32>>>(
+                    subgraph_pointers,
+                    task_pointers.d_tasks_A,
+                    task_pointers.d_tiny_tasks_A,
+                    h_tiny_tail_A,
+                    task_pointers.d_delta_log_A,
+                    task_pointers.d_tiny_tasks_B,
+                    task_pointers.d_tiny_tail_B,
+                    TINY_SMALL_CAP,
+                    task_pointers.d_delta_log_B,
+                    task_pointers.d_delta_tail_B,
+                    DELTA_SMALL_CAP,
+                    d_continue_checked,
+                    d_continue_errors,
+                    d_continue_spilled
+                );
+
+                chkerr(cudaDeviceSynchronize());
+                checkCudaError(778);
+            }
+
+            unsigned int h_continue_checked = 0;
+            unsigned int h_continue_errors = 0;
+            unsigned int h_continue_spilled = 0;
+            unsigned int h_tiny_tail_B = 0;
+            unsigned int h_delta_tail_B = 0;
+
+            cudaMemcpy(&h_continue_checked,
+                    d_continue_checked,
+                    sizeof(unsigned int),
+                    cudaMemcpyDeviceToHost);
+
+            cudaMemcpy(&h_continue_errors,
+                    d_continue_errors,
+                    sizeof(unsigned int),
+                    cudaMemcpyDeviceToHost);
+
+            cudaMemcpy(&h_continue_spilled,
+                    d_continue_spilled,
+                    sizeof(unsigned int),
+                    cudaMemcpyDeviceToHost);
+
+            cudaMemcpy(&h_tiny_tail_B,
+                    task_pointers.d_tiny_tail_B,
+                    sizeof(unsigned int),
+                    cudaMemcpyDeviceToHost);
+
+            cudaMemcpy(&h_delta_tail_B,
+                    task_pointers.d_delta_tail_B,
+                    sizeof(unsigned int),
+                    cudaMemcpyDeviceToHost);
+
+            printf("resumeTinyTasks_continue_debug checked=%u errors=%u spilled=%u tiny_tail_B=%u delta_tail_B=%u\n",
+                h_continue_checked,
+                h_continue_errors,
+                h_continue_spilled,
+                h_tiny_tail_B,
+                h_delta_tail_B);
+
+            cudaFree(d_continue_checked);
+            cudaFree(d_continue_errors);
+            cudaFree(d_continue_spilled);
+
+            if (h_tiny_tail_B > 0) {
+                TinyTask h_tt_B;
+
+                cudaMemcpy(&h_tt_B,
+                        task_pointers.d_tiny_tasks_B,
+                        sizeof(TinyTask),
+                        cudaMemcpyDeviceToHost);
+
+                printf("First TinyTask B: idx=%d parent=%u plex=%u cand=%u excl=%u log_off=%u log_len=%u depth=%u hash=%llu\n",
+                    h_tt_B.idx,
+                    h_tt_B.parent_task_pos,
+                    h_tt_B.plex_sz,
+                    h_tt_B.cand_sz,
+                    h_tt_B.excl_sz,
+                    h_tt_B.log_off,
+                    h_tt_B.log_len,
+                    h_tt_B.depth,
+                    (unsigned long long)h_tt_B.state_hash);
+
+                Delta h_delta_B[16];
+
+                unsigned int to_print = h_tt_B.log_len;
+                if (to_print > 16) to_print = 16;
+
+                cudaMemcpy(h_delta_B,
+                        task_pointers.d_delta_log_B + h_tt_B.log_off,
+                        to_print * sizeof(Delta),
+                        cudaMemcpyDeviceToHost);
+
+                for (unsigned int i = 0; i < to_print; ++i) {
+                    printf("  B delta[%u]: v=%u old=%u new=%u neiInP_delta=%d neiInG_delta=%d\n",
+                        i,
+                        h_delta_B[i].v,
+                        h_delta_B[i].old_label,
+                        h_delta_B[i].new_label,
+                        h_delta_B[i].neiInP_delta,
+                        h_delta_B[i].neiInG_delta);
+                }
+            }
+
             int* tmp = d_abort_flag;
             d_abort_flag = d_abort2;
             d_abort2 = tmp;
@@ -1154,9 +1439,12 @@ pn = peelG.n;
     cudaMemcpy(&h_validblk, validblk, sizeof(unsigned int), cudaMemcpyDeviceToHost);
     cudaMemcpy(&h_global, global_count, sizeof(unsigned int), cudaMemcpyDeviceToHost);
     printf("Total Valid Blocks: %d, Maximal k-Plexes: %u\n", h_validblk, h_plex_count);
-    printf("Total tasks generated: %u\n", h_global);
+    // printf("Total tasks generated: %u\n", h_global);
     printf("\nKernel Launch Successfully\n");
     free_graph_gpu_memory(graph_pointers, degen_pointers);
+    free_tiny_task_queues(task_pointers);
+    cudaFree(d_resume_checked);
+    cudaFree(d_resume_errors);
     // delete[] buf.tasks;
     // cudaFreeHost(h_task_stage);
 }

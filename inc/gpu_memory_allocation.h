@@ -61,3 +61,74 @@ void copy_graph_to_gpu(const graph<T> &peelG, int* dpos, int* dseq, G_pointers &
     chkerr(cudaMalloc(&(s.C2Size), WARPS*sizeof(unsigned int)));
     chkerr(cudaMalloc(&(s.XSize), WARPS*sizeof(unsigned int)));
 }
+
+inline void allocate_tiny_task_queues(T_pointers &t) {
+    // -------------------------------------------------------------------------
+    // TinyTask queues
+    // A and B are small ping-pong queues.
+    // C is the larger overflow/global continuation queue.
+    // -------------------------------------------------------------------------
+    chkerr(cudaMalloc(&(t.d_tiny_tasks_A),
+                      TINY_SMALL_CAP * sizeof(TinyTask)));
+    chkerr(cudaMalloc(&(t.d_tiny_tasks_B),
+                      TINY_SMALL_CAP * sizeof(TinyTask)));
+    chkerr(cudaMalloc(&(t.d_tiny_tasks_C),
+                      TINY_MAX_CAP * sizeof(TinyTask)));
+
+    chkerr(cudaMalloc(&(t.d_tiny_tail_A), sizeof(unsigned int)));
+    chkerr(cudaMalloc(&(t.d_tiny_tail_B), sizeof(unsigned int)));
+    chkerr(cudaMalloc(&(t.d_tiny_tail_C), sizeof(unsigned int)));
+
+    chkerr(cudaMemset(t.d_tiny_tail_A, 0, sizeof(unsigned int)));
+    chkerr(cudaMemset(t.d_tiny_tail_B, 0, sizeof(unsigned int)));
+    chkerr(cudaMemset(t.d_tiny_tail_C, 0, sizeof(unsigned int)));
+
+
+    // -------------------------------------------------------------------------
+    // Delta logs
+    // A/B correspond to small ping-pong queues.
+    // C corresponds to the larger overflow/global continuation queue.
+    // -------------------------------------------------------------------------
+    chkerr(cudaMalloc(&(t.d_delta_log_A),
+                      DELTA_SMALL_CAP * sizeof(Delta)));
+    chkerr(cudaMalloc(&(t.d_delta_log_B),
+                      DELTA_SMALL_CAP * sizeof(Delta)));
+    chkerr(cudaMalloc(&(t.d_delta_log_C),
+                      DELTA_MAX_CAP * sizeof(Delta)));
+
+    chkerr(cudaMalloc(&(t.d_delta_tail_A), sizeof(unsigned int)));
+    chkerr(cudaMalloc(&(t.d_delta_tail_B), sizeof(unsigned int)));
+    chkerr(cudaMalloc(&(t.d_delta_tail_C), sizeof(unsigned int)));
+
+    chkerr(cudaMemset(t.d_delta_tail_A, 0, sizeof(unsigned int)));
+    chkerr(cudaMemset(t.d_delta_tail_B, 0, sizeof(unsigned int)));
+    chkerr(cudaMemset(t.d_delta_tail_C, 0, sizeof(unsigned int)));
+}
+
+inline void free_tiny_task_queues(T_pointers &t) {
+    cudaFree(t.d_tiny_tasks_A);
+    cudaFree(t.d_tiny_tasks_B);
+    cudaFree(t.d_tiny_tasks_C);
+
+    cudaFree(t.d_tiny_tail_A);
+    cudaFree(t.d_tiny_tail_B);
+    cudaFree(t.d_tiny_tail_C);
+
+    cudaFree(t.d_delta_log_A);
+    cudaFree(t.d_delta_log_B);
+    cudaFree(t.d_delta_log_C);
+
+    cudaFree(t.d_delta_tail_A);
+    cudaFree(t.d_delta_tail_B);
+    cudaFree(t.d_delta_tail_C);
+}
+
+inline void reset_tiny_task_queues(T_pointers &t) {
+    chkerr(cudaMemset(t.d_tiny_tail_A, 0, sizeof(unsigned int)));
+    chkerr(cudaMemset(t.d_tiny_tail_B, 0, sizeof(unsigned int)));
+    chkerr(cudaMemset(t.d_tiny_tail_C, 0, sizeof(unsigned int)));
+
+    chkerr(cudaMemset(t.d_delta_tail_A, 0, sizeof(unsigned int)));
+    chkerr(cudaMemset(t.d_delta_tail_B, 0, sizeof(unsigned int)));
+    chkerr(cudaMemset(t.d_delta_tail_C, 0, sizeof(unsigned int)));
+}

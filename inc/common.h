@@ -10,6 +10,20 @@
 #define AVG_LEFT_DEGREE 200
 #define MAX_CAP 2048 * 2048 
 #define SMALL_CAP 512 * 512 * 2
+#define TINY_MAX_CAP   MAX_CAP
+#define TINY_SMALL_CAP SMALL_CAP
+#define DELTA_PER_TINY 8
+
+#define DELTA_MAX_CAP   (TINY_MAX_CAP * DELTA_PER_TINY)
+#define DELTA_SMALL_CAP (TINY_SMALL_CAP * DELTA_PER_TINY)
+
+#define LOCAL_BNB_DEPTH 3
+#define LOCAL_UNDO_CAP 512
+
+#define LBL_P 0
+#define LBL_C 1
+#define LBL_X 2
+
 #define K_LIMIT 10
 #define MAX_DEPTH 1000
 #define CAP MAX_BLK_SIZE * MAX_BLK_SIZE
@@ -169,6 +183,110 @@ struct Task{
     {}
 };
 
+struct TinyTask {
+    int idx;                 // same meaning as Task::idx: root/subgraph id
+
+    uint16_t plex_sz;        // compact version of PlexSz
+    uint16_t cand_sz;        // compact version of CandSz
+    uint16_t excl_sz;        // compact version of ExclSz
+
+    uint32_t log_off;        // starting offset in global Delta array
+    uint16_t log_len;        // number of Delta records for this continuation
+
+    uint16_t depth;          // resume depth inside local BNB search
+
+    uint32_t parent_task_pos;
+
+    uint64_t state_hash;
+
+    __host__ __device__ TinyTask() {}
+
+    __host__ __device__ TinyTask(int idx_,
+             uint16_t plex_sz_,
+             uint16_t cand_sz_,
+             uint16_t excl_sz_,
+             uint32_t log_off_,
+             uint16_t log_len_,
+             uint16_t depth_,
+             uint32_t parent_task_pos_,
+             uint64_t state_hash_)
+    : idx(idx_)
+    , plex_sz(plex_sz_)
+    , cand_sz(cand_sz_)
+    , excl_sz(excl_sz_)
+    , log_off(log_off_)
+    , log_len(log_len_)
+    , depth(depth_)
+    , parent_task_pos(parent_task_pos_)
+    , state_hash(state_hash_)
+    {}
+};
+
+struct Delta {
+    uint16_t v;              // local vertex id inside the subgraph/root task
+
+    uint8_t old_label;       // previous label: P/C/X/...
+    uint8_t new_label;       // new label after this branch decision
+
+    int16_t neiInP_delta;    // change applied to neiInP[v]
+    int16_t neiInG_delta;    // change applied to neiInG[v]
+
+    __host__ __device__ Delta() {}
+
+    __host__ __device__ Delta(uint16_t v_,
+          uint8_t old_label_,
+          uint8_t new_label_,
+          int16_t neiInP_delta_,
+          int16_t neiInG_delta_)
+    : v(v_)
+    , old_label(old_label_)
+    , new_label(new_label_)
+    , neiInP_delta(neiInP_delta_)
+    , neiInG_delta(neiInG_delta_)
+    {}
+};
+
+struct UndoRec {
+    uint16_t v;
+    uint8_t old_label;
+    uint16_t old_neiInP;
+    uint16_t old_neiInG;
+
+    __host__ __device__ UndoRec() {}
+
+    __host__ __device__ UndoRec(uint16_t v_,
+            uint8_t old_label_,
+            uint16_t old_neiInP_,
+            uint16_t old_neiInG_)
+    : v(v_)
+    , old_label(old_label_)
+    , old_neiInP(old_neiInP_)
+    , old_neiInG(old_neiInG_)
+    {}
+};
+
+struct LocalSizeMark {
+    unsigned int undo_top;
+    unsigned int plex_sz;
+    unsigned int cand_sz;
+    unsigned int excl_sz;
+
+    __host__ __device__
+    LocalSizeMark() {}
+
+    __host__ __device__
+    LocalSizeMark(unsigned int undo_top_,
+                  unsigned int plex_sz_,
+                  unsigned int cand_sz_,
+                  unsigned int excl_sz_)
+    : undo_top(undo_top_)
+    , plex_sz(plex_sz_)
+    , cand_sz(cand_sz_)
+    , excl_sz(excl_sz_)
+    {}
+};
+
+
 struct HostTask{
     int idx;
     unsigned int PlexSz;
@@ -222,4 +340,20 @@ typedef struct T_pointers{
     uint16_t* d_all_neiInG_C;
     uint16_t* d_all_neiInP_C;
     unsigned int* d_tail_C;
+
+    TinyTask* d_tiny_tasks_A;
+    TinyTask* d_tiny_tasks_B;
+    TinyTask* d_tiny_tasks_C;
+
+    unsigned int* d_tiny_tail_A;
+    unsigned int* d_tiny_tail_B;
+    unsigned int* d_tiny_tail_C;
+
+    Delta* d_delta_log_A;
+    Delta* d_delta_log_B;
+    Delta* d_delta_log_C;
+
+    unsigned int* d_delta_tail_A;
+    unsigned int* d_delta_tail_B;
+    unsigned int* d_delta_tail_C;
 } T_pointers;
