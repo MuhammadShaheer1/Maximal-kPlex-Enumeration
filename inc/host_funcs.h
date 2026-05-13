@@ -1275,14 +1275,17 @@ pn = peelG.n;
             unsigned int* d_continue_checked;
             unsigned int* d_continue_errors;
             unsigned int* d_continue_spilled;
+            unsigned int* d_continue_overflow;
 
             chkerr(cudaMalloc(&d_continue_checked, sizeof(unsigned int)));
             chkerr(cudaMalloc(&d_continue_errors, sizeof(unsigned int)));
             chkerr(cudaMalloc(&d_continue_spilled, sizeof(unsigned int)));
+            chkerr(cudaMalloc(&d_continue_overflow, sizeof(unsigned int)));
 
             chkerr(cudaMemset(d_continue_checked, 0, sizeof(unsigned int)));
             chkerr(cudaMemset(d_continue_errors, 0, sizeof(unsigned int)));
             chkerr(cudaMemset(d_continue_spilled, 0, sizeof(unsigned int)));
+            chkerr(cudaMemset(d_continue_overflow, 0, sizeof(unsigned int)));
 
             if (h_tiny_tail_A > 0) {
                 printf("Launching resumeTinyTasks_continue_debug with %u tiny tasks\n",
@@ -1296,13 +1299,14 @@ pn = peelG.n;
                     task_pointers.d_delta_log_A,
                     task_pointers.d_tiny_tasks_B,
                     task_pointers.d_tiny_tail_B,
-                    TINY_SMALL_CAP,
+                    TINY_MAX_CAP,
                     task_pointers.d_delta_log_B,
                     task_pointers.d_delta_tail_B,
-                    DELTA_SMALL_CAP,
+                    DELTA_MAX_CAP,
                     d_continue_checked,
                     d_continue_errors,
-                    d_continue_spilled
+                    d_continue_spilled,
+                    d_continue_overflow
                 );
 
                 chkerr(cudaDeviceSynchronize());
@@ -1312,6 +1316,7 @@ pn = peelG.n;
             unsigned int h_continue_checked = 0;
             unsigned int h_continue_errors = 0;
             unsigned int h_continue_spilled = 0;
+            unsigned int h_continue_overflow = 0;
             unsigned int h_tiny_tail_B = 0;
             unsigned int h_delta_tail_B = 0;
 
@@ -1330,6 +1335,8 @@ pn = peelG.n;
                     sizeof(unsigned int),
                     cudaMemcpyDeviceToHost);
 
+            chkerr(cudaMemcpy(&h_continue_overflow, d_continue_overflow, sizeof(unsigned int), cudaMemcpyDeviceToHost));
+
             cudaMemcpy(&h_tiny_tail_B,
                     task_pointers.d_tiny_tail_B,
                     sizeof(unsigned int),
@@ -1340,16 +1347,13 @@ pn = peelG.n;
                     sizeof(unsigned int),
                     cudaMemcpyDeviceToHost);
 
-            printf("resumeTinyTasks_continue_debug checked=%u errors=%u spilled=%u tiny_tail_B=%u delta_tail_B=%u\n",
+            printf("resumeTinyTasks_continue_debug checked=%u errors=%u spilled=%u overflow=%u tiny_tail_B=%u delta_tail_B=%u\n",
                 h_continue_checked,
                 h_continue_errors,
                 h_continue_spilled,
+                h_continue_overflow,
                 h_tiny_tail_B,
                 h_delta_tail_B);
-
-            cudaFree(d_continue_checked);
-            cudaFree(d_continue_errors);
-            cudaFree(d_continue_spilled);
 
             if (h_tiny_tail_B > 0) {
                 TinyTask h_tt_B;
@@ -1389,6 +1393,300 @@ pn = peelG.n;
                         h_delta_B[i].neiInP_delta,
                         h_delta_B[i].neiInG_delta);
                 }
+            }
+
+            unsigned int* d_resume_checked = nullptr;
+            unsigned int* d_resume_errors  = nullptr;
+
+            cudaMalloc(&d_resume_checked, sizeof(unsigned int));
+            cudaMalloc(&d_resume_errors,  sizeof(unsigned int));
+
+            cudaMemset(d_resume_checked, 0, sizeof(unsigned int));
+            cudaMemset(d_resume_errors,  0, sizeof(unsigned int));
+
+            if (h_tiny_tail_B > 0) {
+                printf("Launching resumeTinyTasks_debug on TinyTask B with %u tiny tasks\n",
+                    h_tiny_tail_B);
+
+                resumeTinyTasks_debug<<<h_tiny_tail_B, 32>>>(
+                    subgraph_pointers,
+                    task_pointers.d_tasks_A,
+                    task_pointers.d_tiny_tasks_B,
+                    h_tiny_tail_B,
+                    task_pointers.d_delta_log_B,
+                    d_resume_checked,
+                    d_resume_errors
+                );
+
+                cudaError_t step9_launch_err = cudaGetLastError();
+                if (step9_launch_err != cudaSuccess) {
+                    printf("resumeTinyTasks_debug_B launch error: %s\n",
+                        cudaGetErrorString(step9_launch_err));
+                }
+
+                cudaError_t step9_sync_err = cudaDeviceSynchronize();
+                if (step9_sync_err != cudaSuccess) {
+                    printf("resumeTinyTasks_debug_B sync error: %s\n",
+                        cudaGetErrorString(step9_sync_err));
+                }
+            } else {
+                printf("Skipping Step 9: h_tiny_tail_B is 0\n");
+            }
+
+            h_resume_checked = 0;
+            h_resume_errors  = 0;
+
+            cudaMemcpy(&h_resume_checked,
+                    d_resume_checked,
+                    sizeof(unsigned int),
+                    cudaMemcpyDeviceToHost);
+
+            cudaMemcpy(&h_resume_errors,
+                    d_resume_errors,
+                    sizeof(unsigned int),
+                    cudaMemcpyDeviceToHost);
+
+            printf("resumeTinyTasks_debug_B checked=%u errors=%u\n",
+                h_resume_checked,
+                h_resume_errors);
+
+            const unsigned int EXTRA_GENS = 4;
+
+            TinyTask* cur_tiny = task_pointers.d_tiny_tasks_B;
+            Delta* cur_log = task_pointers.d_delta_log_B;
+            unsigned int cur_tail = h_tiny_tail_B;
+            const char* cur_name = "B";
+
+            for (unsigned int gen = 0; gen < EXTRA_GENS; gen++)
+            {
+                if (cur_tail == 0)
+                {
+                    printf("Stopping: Current TinyTask queue %s is empty\n", cur_name);
+                    break;
+                }
+
+                const bool out_is_A = (cur_tiny == task_pointers.d_tiny_tasks_B);
+
+                TinyTask* out_tiny = out_is_A ? task_pointers.d_tiny_tasks_A : task_pointers.d_tiny_tasks_B;
+
+                Delta* out_log = out_is_A ? task_pointers.d_delta_log_A : task_pointers.d_delta_log_B;
+
+                unsigned int* out_tiny_tail = out_is_A ? task_pointers.d_tiny_tail_A : task_pointers.d_tiny_tail_B;
+
+                unsigned int* out_delta_tail = out_is_A ? task_pointers.d_delta_tail_A : task_pointers.d_delta_tail_B;
+
+                const char* out_name = out_is_A ? "A" : "B";
+
+                chkerr(cudaMemset(out_tiny_tail, 0, sizeof(unsigned int)));
+                chkerr(cudaMemset(out_delta_tail, 0, sizeof(unsigned int)));
+
+                chkerr(cudaMemset(d_continue_checked, 0, sizeof(unsigned int)));
+                chkerr(cudaMemset(d_continue_errors, 0, sizeof(unsigned int)));
+                chkerr(cudaMemset(d_continue_spilled, 0, sizeof(unsigned int)));
+                chkerr(cudaMemset(d_continue_overflow, 0, sizeof(unsigned int)));
+
+                printf("gen = %u, continuing TinyTask %s -> %s with %u tiny tasks\n", gen + 1, cur_name, out_name, cur_tail);
+
+                // resumeTinyTasks_continue_debug<<<cur_tail, 32>>>(subgraph_pointers, task_pointers.d_tasks_A, cur_tiny, cur_tail, cur_log, out_tiny, out_tiny_tail, TINY_MAX_CAP, out_log, out_delta_tail, DELTA_MAX_CAP, d_continue_checked, d_continue_errors, d_continue_spilled, d_continue_overflow);
+
+                // chkerr(cudaDeviceSynchronize());
+                // checkCudaError(790 + gen);
+
+                    bool cuda_failed = false;
+
+                    for (unsigned int chunk_start = 0; chunk_start < cur_tail; chunk_start += CONTINUE_CHUNK)
+                    {
+                        unsigned int h_overflow_now = 0;
+                        chkerr(cudaMemcpy(&h_overflow_now, d_continue_overflow, sizeof(unsigned int), cudaMemcpyDeviceToHost));
+
+                        if (h_overflow_now != 0)
+                        {
+                            printf("Stopping Chunks Early: Overflow already detected at chunk_start: %u\n", chunk_start);
+                            break;
+                        }
+
+                        unsigned int h_errors_now = 0;
+                        chkerr(cudaMemcpy(&h_errors_now, d_continue_errors, sizeof(unsigned int), cudaMemcpyDeviceToHost));
+
+                        if (h_errors_now != 0)
+                        {
+                            printf("Stopping Chunks Early: Continue Errors already detected at chunk_start=%u\n", chunk_start);
+                            break;
+                        }
+
+                        const unsigned int chunk_count = std::min(CONTINUE_CHUNK, cur_tail - chunk_start);
+                        printf("Chunk start = %u count = %u\n", chunk_start, chunk_count);
+
+                        unsigned int h_tiny_tail_now = 0;
+                        unsigned int h_delta_tail_now = 0;
+
+                        chkerr(cudaMemcpy(&h_tiny_tail_now, out_tiny_tail, sizeof(unsigned int), cudaMemcpyDeviceToHost));
+                        chkerr(cudaMemcpy(&h_delta_tail_now, out_delta_tail, sizeof(unsigned int), cudaMemcpyDeviceToHost));
+
+                        TinyTask h_first_curr_tt;
+                        chkerr(cudaMemcpy(&h_first_curr_tt, cur_tiny+chunk_start, sizeof(TinyTask), cudaMemcpyDeviceToHost));
+
+                        const unsigned int max_children_per_input = 1u << LOCAL_BNB_DEPTH;
+                        const unsigned int next_log_len = (unsigned int)h_first_curr_tt.log_len + LOCAL_BNB_DEPTH;
+
+                        const unsigned long long worst_new_tiny = (unsigned long long)chunk_count * max_children_per_input;
+
+                        const unsigned long long worst_new_delta = worst_new_tiny * next_log_len;
+
+                        const unsigned long long worst_tiny_tail = (unsigned long long)h_tiny_tail_now + worst_new_tiny;
+
+                        const unsigned long long worst_delta_tail = (unsigned long long)h_delta_tail_now + worst_new_delta;
+
+                        if (worst_tiny_tail > (unsigned long long) TINY_MAX_CAP || worst_delta_tail > (unsigned long long)DELTA_MAX_CAP)
+                        {
+                            printf("Stopping chunks before launch: conservative capacity limit at chunk_start=%u, chunk_count=%u, current_tiny=%u/%u, current_delta=%u/%u, worst_new_tiny=%llu, worst_new_delta=%llu, next_log_len=%u\n", chunk_start, chunk_count, h_tiny_tail_now, TINY_MAX_CAP, h_delta_tail_now, DELTA_MAX_CAP, worst_new_tiny, worst_new_delta, next_log_len);
+
+                            unsigned int one = 1;
+                            chkerr(cudaMemcpy(d_continue_overflow, &one, sizeof(unsigned int), cudaMemcpyHostToDevice));
+
+                            break;
+                        }
+
+                        resumeTinyTasks_continue_debug<<<chunk_count, 32>>>(subgraph_pointers, task_pointers.d_tasks_A, cur_tiny + chunk_start, chunk_count, cur_log, out_tiny, out_tiny_tail, TINY_MAX_CAP, out_log, out_delta_tail, DELTA_MAX_CAP, d_continue_checked, d_continue_errors, d_continue_spilled, d_continue_overflow);
+
+                        cudaError_t launch_err = cudaGetLastError();
+                        if (launch_err != cudaSuccess)
+                        {
+                            printf("Continue Chunk Launch Error at chunk start=%u: %s\n", chunk_start, cudaGetErrorString(launch_err));
+                            cuda_failed = true;
+                            break;
+                        }
+                        
+                        cudaError_t sync_err = cudaDeviceSynchronize();
+                        if (sync_err != cudaSuccess)
+                        {
+                            printf("Continue Chunk Sync Error at chunk_start=%u: %s\n", chunk_start, cudaGetErrorString(sync_err));
+                            cuda_failed = true;
+                            break;
+                        }
+                    }
+                    if (cuda_failed){
+                        printf("Stopping Generation %u because CUDA failed during chunked continuation\n", gen+1);
+                        break;
+                    }
+
+                
+
+                h_continue_checked = 0;
+                h_continue_errors = 0;
+                h_continue_spilled = 0;
+                h_continue_overflow = 0;
+                unsigned int h_out_tiny_tail = 0;
+                unsigned int h_out_delta_tail = 0;
+
+                chkerr(cudaMemcpy(&h_continue_checked, d_continue_checked, sizeof(unsigned int), cudaMemcpyDeviceToHost));
+                chkerr(cudaMemcpy(&h_continue_errors, d_continue_errors, sizeof(unsigned int), cudaMemcpyDeviceToHost));
+                chkerr(cudaMemcpy(&h_continue_spilled, d_continue_spilled, sizeof(unsigned int), cudaMemcpyDeviceToHost));
+                chkerr(cudaMemcpy(&h_continue_overflow, d_continue_overflow, sizeof(unsigned int), cudaMemcpyDeviceToHost));
+                chkerr(cudaMemcpy(&h_out_tiny_tail, out_tiny_tail, sizeof(unsigned int), cudaMemcpyDeviceToHost));
+                chkerr(cudaMemcpy(&h_out_delta_tail, out_delta_tail, sizeof(unsigned int), cudaMemcpyDeviceToHost));
+
+                printf("Continue %s->%s checked=%u errors=%u spilled=%u overflow=%u tiny_tail_%s=%u delta_tail_%s=%u\n", cur_name, out_name, h_continue_checked, h_continue_errors, h_continue_spilled, h_continue_overflow, out_name, h_out_tiny_tail, out_name, h_out_delta_tail);
+
+                if (h_continue_errors != 0) {
+                    printf("Stopping: Continue Errors detected in generation %u\n", gen+1);
+                }
+
+                if (h_continue_overflow != 0) {
+                    printf("Stopping generation loop because continuation overflow occurred: "
+                        "tiny_tail=%u tiny_cap=%u delta_tail=%u delta_cap=%u spilled=%u\n",
+                        h_out_tiny_tail,
+                        TINY_MAX_CAP,
+                        h_out_delta_tail,
+                        DELTA_MAX_CAP,
+                        h_continue_spilled);
+                    break;
+                }
+
+                if (h_out_tiny_tail > 0)
+                {
+                    TinyTask h_tt_out;
+
+                    chkerr(cudaMemcpy(&h_tt_out, out_tiny, sizeof(TinyTask), cudaMemcpyDeviceToHost));
+                    printf("First TinyTask %s: idx=%d, parent=%u, plex=%u, cand=%u, excl=%u, log_off=%u, log_len=%u, depth=%u, hash=%llu\n", out_name, h_tt_out.idx, h_tt_out.parent_task_pos, h_tt_out.plex_sz, h_tt_out.cand_sz, h_tt_out.excl_sz, h_tt_out.log_off, h_tt_out.log_len, h_tt_out.depth, (unsigned long long)h_tt_out.state_hash);
+
+                }
+
+                chkerr(cudaMemset(d_resume_checked, 0, sizeof(unsigned int)));
+                chkerr(cudaMemset(d_resume_errors, 0, sizeof(unsigned int)));
+
+                if (h_out_tiny_tail > 0)
+                {
+                    printf("Validating TinyTask %s with %u tiny tasks\n", out_name, h_out_tiny_tail);
+
+                    if (h_continue_overflow != 0) {
+                        printf("Skipping validation because continuation overflow occurred: "
+                            "tiny_tail=%u tiny_cap=%u delta_tail=%u delta_cap=%u spilled=%u\n",
+                            h_out_tiny_tail,
+                            TINY_MAX_CAP,
+                            h_out_delta_tail,
+                            DELTA_MAX_CAP,
+                            h_continue_spilled);
+                        break;
+                    }
+
+                    if (h_continue_errors != 0) {
+                        printf("Skipping validation because continuation errors occurred: errors=%u\n",
+                            h_continue_errors);
+                        break;
+                    }
+
+                    bool validate_cuda_failed = false;
+
+                    for (unsigned int chunk_start = 0; chunk_start < h_out_tiny_tail; chunk_start += CONTINUE_CHUNK)
+                    {
+
+                        const unsigned int chunk_count = std::min(CONTINUE_CHUNK, h_out_tiny_tail - chunk_start);
+                        printf("Validate Chunk start = %u count = %u\n", chunk_start, chunk_count);
+
+                        resumeTinyTasks_debug<<<chunk_count, 32>>>(subgraph_pointers, task_pointers.d_tasks_A, out_tiny + chunk_start, chunk_count, out_log, d_resume_checked, d_resume_errors);
+
+                        cudaError_t launch_err = cudaGetLastError();
+                        if (launch_err != cudaSuccess)
+                        {
+                            printf("Validate Chunk Launch Error at chunk start=%u: %s\n", chunk_start, cudaGetErrorString(launch_err));
+                            validate_cuda_failed = true;
+                            break;
+                        }
+                        
+                        cudaError_t sync_err = cudaDeviceSynchronize();
+                        if (sync_err != cudaSuccess)
+                        {
+                            printf("Validate Chunk Sync Error at chunk_start=%u: %s\n", chunk_start, cudaGetErrorString(sync_err));
+                            validate_cuda_failed = true;
+                            break;
+                        }
+                    }
+                    if (validate_cuda_failed){
+                        printf("Stopping Generation %u because Validation CUDA failed\n", gen+1);
+                    }
+                }
+
+                h_resume_checked = 0;
+                h_resume_errors = 0;
+
+                chkerr(cudaMemcpy(&h_resume_checked, d_resume_checked, sizeof(unsigned int), cudaMemcpyDeviceToHost));
+                chkerr(cudaMemcpy(&h_resume_errors, d_resume_errors, sizeof(unsigned int), cudaMemcpyDeviceToHost));
+
+                printf("Validate %s Checked=%u Errors=%u\n", out_name, h_resume_checked, h_resume_errors);
+
+                if (h_resume_errors != 0)
+                {
+                    printf("Stopping: Replay Validation Errors Detected in queue %s\n", out_name);
+                    break;
+                }
+
+                cur_tiny = out_tiny;
+                cur_log = out_log;
+                cur_tail = h_out_tiny_tail;
+                cur_name = out_name;
+
+
             }
 
             int* tmp = d_abort_flag;

@@ -2115,6 +2115,7 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
 //     __syncwarp();
 // }
 
+//MurmurHash3 64-bit hashing.
 __device__ __forceinline__
 uint64_t mix64_debug(uint64_t x)
 {
@@ -2472,12 +2473,6 @@ void BNB_localDFS_debug(S_pointers s,
       path_decisions[d] = 0;
   }
 
-    for (int d = 0; d < LOCAL_BNB_DEPTH; ++d) {
-        local_pivots[d] = 0;
-        local_branch_state[d] = 0;
-        marks[d] = LocalSizeMark(0, 0, 0, 0);
-    }
-
     int depth = 0;
     int iter_guard = 0;
     const int ITER_GUARD_LIMIT = 4096;
@@ -2485,7 +2480,6 @@ void BNB_localDFS_debug(S_pointers s,
     while (depth >= 0 && iter_guard < ITER_GUARD_LIMIT) {
         iter_guard++;
         // If we reached local depth limit, count this as a spill point.
-        // Later this will emit TinyTask instead of just incrementing debug_spilled.
         if (depth >= LOCAL_BNB_DEPTH) {
           spill_tiny_task_debug(task.idx,
                                 task_head+task_id,
@@ -2868,7 +2862,8 @@ void spill_tiny_task_append_debug(const TinyTask& parent_tt,
                                   uint16_t* neiInP,
                                   uint16_t* neiInG,
                                   unsigned int hash_n,
-                                  unsigned int* debug_spilled)
+                                  unsigned int* debug_spilled,
+                                  unsigned int* debug_overflow)
 {
     const unsigned int lane_id = threadIdx.x & 31;
 
@@ -2876,50 +2871,78 @@ void spill_tiny_task_append_debug(const TinyTask& parent_tt,
     const unsigned int total_len = old_len + new_depth;
 
     uint64_t state_hash = hash_state_debug(labels, neiInP, neiInG, hash_n);
+    state_hash = __shfl_sync(0xFFFFFFFF, state_hash, 0);
 
     if (lane_id == 0) {
-        bool log_ok = true;
+        if (total_len > 65535u){
+          unsigned int ov = atomicAdd(debug_overflow, 1);
 
-        unsigned int log_off = atomicAdd(out_delta_tail, total_len);
-        log_ok = (log_off + total_len <= delta_cap);
-
-        if (log_ok) {
-            unsigned int pos = atomicAdd(out_tiny_tail, 1);
-
-            if (pos < tiny_cap) {
-                // 1. Copy old replay path from parent TinyTask.
-                for (unsigned int i = 0; i < old_len; ++i) {
-                    out_delta_log[log_off + i] =
-                        in_delta_log[parent_tt.log_off + i];
-                }
-
-                // 2. Append new local decisions.
-                for (unsigned int i = 0; i < new_depth; ++i) {
-                    const uint16_t v = path_vertices[i];
-
-                    if (path_decisions[i] == 1) {
-                        out_delta_log[log_off + old_len + i] =
-                            Delta(v, C, P, 0, 0);
-                    } else {
-                        out_delta_log[log_off + old_len + i] =
-                            Delta(v, C, X, 0, 0);
-                    }
-                }
-
-                // 3. New TinyTask keeps same base full-task parent.
-                out_tiny_tasks[pos] = TinyTask(
-                    parent_tt.idx,
-                    (uint16_t)plex_sz,
-                    (uint16_t)cand_sz,
-                    (uint16_t)excl_sz,
-                    log_off,
-                    (uint16_t)total_len,
-                    (uint16_t)total_len,
-                    parent_tt.parent_task_pos,
-                    state_hash
-                );
-            }
+          if (ov < 8)
+          {
+            printf("Spill Overflow: total_len too large parent=%u idx=%u old_len=%u new_depth=%u total_len=%u\n", parent_tt.parent_task_pos, parent_tt.idx, old_len, new_depth, total_len);
+          }
+          return;
         }
+
+        // unsigned int pos = atomicAdd(out_tiny_tail, 1);
+
+        // if (pos >= tiny_cap)
+        // {
+        //   atomicAdd(debug_overflow, 1);
+        //   if (pos == tiny_cap){
+        //   printf("Spill overflow: TinyTask cap reached tiny_cap=%u requested_pos=%u parent=%u idx=%d old_len=%u new_depth=%u\n", tiny_cap, pos, parent_tt.parent_task_pos, parent_tt.idx, old_len, new_depth);
+        //   }
+        //   return;
+        // }
+
+        unsigned int log_off = 0;
+
+        if (total_len > 0)
+        {
+          log_off = atomicAdd(out_delta_tail, total_len);
+
+          if (log_off + total_len > delta_cap)
+          {
+            unsigned int ov = atomicAdd(debug_overflow, 1);
+
+            if (ov < 8)
+            {
+              printf("Spill Overflow: Delta Cap reached delta_cap=%u, log_off=%u, total_len=%u, parent=%u, idx=%d\n", delta_cap, log_off, total_len, parent_tt.parent_task_pos, parent_tt.idx);
+            }
+            return;
+          }
+        }
+
+        unsigned int pos = atomicAdd(out_tiny_tail, 1);
+
+        if (pos >= tiny_cap)
+        {
+          unsigned int ov = atomicAdd(debug_overflow, 1);
+          if (ov < 8){
+          printf("Spill overflow: TinyTask cap reached tiny_cap=%u requested_pos=%u parent=%u idx=%d old_len=%u new_depth=%u\n", tiny_cap, pos, parent_tt.parent_task_pos, parent_tt.idx, old_len, new_depth);
+          }
+          return;
+        }
+
+        for (unsigned int i = 0; i < old_len; i++)
+        {
+          out_delta_log[log_off + i] = in_delta_log[parent_tt.log_off + i];
+        }
+
+        for (unsigned int i = 0; i < new_depth; i++)
+        {
+          const uint16_t v = path_vertices[i];
+
+          if (path_decisions[i] == 1)
+          {
+            out_delta_log[log_off + old_len + i] = Delta(v, C, P, 0, 0);
+          }
+          else {
+            out_delta_log[log_off + old_len + i] = Delta(v, C, X, 0, 0);
+          }
+        }
+
+        out_tiny_tasks[pos] = TinyTask(parent_tt.idx, (uint16_t)plex_sz, (uint16_t)cand_sz, (uint16_t)excl_sz, log_off, (uint16_t)total_len, (uint16_t)total_len, parent_tt.parent_task_pos, state_hash);
 
         atomicAdd(debug_spilled, 1);
     }
@@ -3001,6 +3024,17 @@ bool replay_delta_path_debug(unsigned int tiny_id,
     return true;
 }
 
+__device__ __forceinline__
+bool local_undo_has_capacity_for_vertex(
+    uint16_t v,
+    unsigned int* degreeBase,
+    unsigned int undo_top
+) {
+    // One undo for the vertex itself plus one per neighbor update.
+    unsigned int need = 1u + degreeBase[v];
+    return undo_top + need <= LOCAL_UNDO_CAP;
+}
+
 __global__
 void resumeTinyTasks_continue_debug(S_pointers s,
                                     Task* base_tasks,
@@ -3015,7 +3049,8 @@ void resumeTinyTasks_continue_debug(S_pointers s,
                                     unsigned int delta_cap,
                                     unsigned int* debug_checked,
                                     unsigned int* debug_errors,
-                                    unsigned int* debug_spilled)
+                                    unsigned int* debug_spilled,
+                                    unsigned int* debug_overflow)
 {
     unsigned int tiny_id = blockIdx.x;
     unsigned int lane_id = threadIdx.x & 31;
@@ -3024,6 +3059,8 @@ void resumeTinyTasks_continue_debug(S_pointers s,
 
     TinyTask tt = in_tiny_tasks[tiny_id];
     Task base = base_tasks[tt.parent_task_pos];
+
+    unsigned int n = base.PlexSz + base.CandSz + base.ExclSz;
 
     __shared__ uint8_t sh_labels[MAX_BLK_SIZE];
     __shared__ uint16_t sh_neiInP[MAX_BLK_SIZE];
@@ -3088,6 +3125,8 @@ void resumeTinyTasks_continue_debug(S_pointers s,
     uint64_t replay_hash =
         hash_state_debug(sh_labels, sh_neiInP, sh_neiInG, MAX_BLK_SIZE);
 
+    replay_hash = __shfl_sync(0xFFFFFFFF, replay_hash, 0);
+
     if (lane_id == 0) {
         bool ok = true;
 
@@ -3126,12 +3165,8 @@ void resumeTinyTasks_continue_debug(S_pointers s,
     __syncwarp();
 
     // If replay was wrong, do not continue this TinyTask.
-    if (replay_hash != tt.state_hash ||
-        sh_plex_sz != tt.plex_sz ||
-        sh_cand_sz != tt.cand_sz ||
-        sh_excl_sz != tt.excl_sz) {
-        return;
-    }
+    bool replay_state_ok = (replay_hash == tt.state_hash && sh_plex_sz == tt.plex_sz && sh_cand_sz == tt.cand_sz && sh_excl_sz == tt.excl_sz);
+    if (!replay_state_ok) return;
 
     // ---------------------------------------------------------------------
     // Continue bounded local DFS from the replayed TinyTask state.
@@ -3154,10 +3189,22 @@ void resumeTinyTasks_continue_debug(S_pointers s,
     }
 
     int depth = 0;
+    int iter_guard = 0;
+    const int ITER_GUARD_LIMIT = 16384;
 
-    while (true) {
+    while (depth >= 0 && iter_guard < ITER_GUARD_LIMIT) {
+        iter_guard++;
+
+        unsigned int overflow_seen = 0;
+
+        if (lane_id == 0) overflow_seen = *debug_overflow;
+
+        overflow_seen = __shfl_sync(0xFFFFFFFF, overflow_seen, 0);
+
+        if (overflow_seen != 0) break;
+
         // Reached another local cutoff: spill TinyTask B.
-        if (depth == LOCAL_BNB_DEPTH) {
+        if (depth >= LOCAL_BNB_DEPTH) {
             spill_tiny_task_append_debug(
                 tt,
                 sh_plex_sz,
@@ -3177,106 +3224,99 @@ void resumeTinyTasks_continue_debug(S_pointers s,
                 sh_neiInP,
                 sh_neiInG,
                 MAX_BLK_SIZE,
-                debug_spilled
+                debug_spilled,
+                debug_overflow
             );
-
-            depth--;
-
-            if (depth < 0) break;
-
-            restore_to_size_mark(
-              marks[depth],
-              sh_labels,
-              sh_neiInP,
-              sh_neiInG,
-              sh_undo,
-              &sh_undo_top,
-              &sh_plex_sz,
-              &sh_cand_sz,
-              &sh_excl_sz
-          );
 
             __syncwarp();
 
-            local_branch_state[depth]++;
+            depth--;
             continue;
+        }
+
+        if (sh_cand_sz == 0){
+          depth--;
+          continue;
         }
 
         // Need to choose pivot at this depth.
         if (local_branch_state[depth] == 0) {
             int pivot = -1;
 
+            unsigned int mark_undo = 0;
+            unsigned int mark_plex = 0;
+            unsigned int mark_cand = 0;
+            unsigned int mark_excl = 0;
+
             // Simple debug pivot: first C vertex.
             if (lane_id == 0) {
-                for (int i = 0; i < MAX_BLK_SIZE; ++i) {
-                    if (sh_labels[i] == C) {
-                        pivot = i;
-                        break;
-                    }
-                }
+                pivot = select_first_candidate(sh_labels, n);
 
-                local_pivots[depth] = (pivot >= 0) ? (uint16_t)pivot : 0;
-                marks[depth] = LocalSizeMark(
-                    sh_undo_top,
-                    sh_plex_sz,
-                    sh_cand_sz,
-                    sh_excl_sz
-                );
+                mark_undo = sh_undo_top;
+                mark_plex = sh_plex_sz;
+                mark_cand = sh_cand_sz;
+                mark_excl = sh_excl_sz;
             }
 
             pivot = __shfl_sync(0xffffffff, pivot, 0);
-
-            __syncwarp();
+            mark_undo = __shfl_sync(0xFFFFFFFF, mark_undo, 0);
+            mark_plex = __shfl_sync(0xFFFFFFFF, mark_plex, 0);
+            mark_cand = __shfl_sync(0xFFFFFFFF, mark_cand, 0);
+            mark_excl = __shfl_sync(0xFFFFFFFF, mark_excl, 0);
 
             if (pivot < 0) {
-                // No C vertices left; nothing more to branch on.
-                if (depth == 0) break;
-
-                depth--;
-
-                restore_to_size_mark(
-                  marks[depth],
-                  sh_labels,
-                  sh_neiInP,
-                  sh_neiInG,
-                  sh_undo,
-                  &sh_undo_top,
-                  &sh_plex_sz,
-                  &sh_cand_sz,
-                  &sh_excl_sz
-              );
-
-                __syncwarp();
-
-                local_branch_state[depth]++;
-                continue;
+              depth--;
+              continue;
             }
-        }
 
-        uint16_t pivot = local_pivots[depth];
+            local_pivots[depth] = (uint16_t)pivot;
+            marks[depth] = LocalSizeMark(mark_undo, mark_plex, mark_cand, mark_excl);
 
-        if (local_branch_state[depth] == 0) {
-            // Include branch: C -> P
-            path_vertices[depth] = pivot;
+            local_branch_state[depth] = 1;
+
+            path_vertices[depth] = (uint16_t)pivot;
             path_decisions[depth] = 1;
 
-            local_include_vertex_debug(
-                pivot,
-                sh_labels,
-                sh_neiInP,
-                sh_neiInG,
-                offsetsBase,
-                neighborsBase,
-                degreeBase,
-                sh_undo,
-                &sh_undo_top,
-                &sh_plex_sz,
-                &sh_cand_sz
-            );
+            bool undo_ok = true;
+
+            if (lane_id == 0) {
+                undo_ok = local_undo_has_capacity_for_vertex(
+                    (uint16_t)pivot,
+                    degreeBase,
+                    sh_undo_top
+                );
+
+                if (!undo_ok) {
+                    unsigned int ov = atomicAdd(debug_overflow, 1);
+
+                    if (ov < 8) {
+                        printf("Undo overflow before include: tiny=%u parent=%u idx=%d "
+                              "pivot=%u undo_top=%u degree=%u cap=%u log_len=%u depth=%d\n",
+                              tiny_id,
+                              tt.parent_task_pos,
+                              tt.idx,
+                              (unsigned int)pivot,
+                              sh_undo_top,
+                              degreeBase[pivot],
+                              LOCAL_UNDO_CAP,
+                              tt.log_len,
+                              depth);
+                    }
+                }
+            }
+
+            undo_ok = __shfl_sync(0xffffffff, undo_ok, 0);
+
+            if (!undo_ok) {
+                break;
+            }
 
             __syncwarp();
 
-            local_branch_state[depth] = 1;
+            local_include_vertex_debug((uint16_t)pivot, sh_labels, sh_neiInP, sh_neiInG, offsetsBase, neighborsBase, degreeBase, sh_undo, &sh_undo_top, &sh_plex_sz, &sh_cand_sz);
+
+            __syncwarp();
+
             depth++;
             continue;
         }
@@ -3297,9 +3337,48 @@ void resumeTinyTasks_continue_debug(S_pointers s,
 
             __syncwarp();
 
+            uint16_t pivot = local_pivots[depth];
+            local_branch_state[depth] = 2;
+
             // Exclude branch: C -> X
             path_vertices[depth] = pivot;
             path_decisions[depth] = 2;
+
+            bool undo_ok = true;
+
+            if (lane_id == 0) {
+                undo_ok = local_undo_has_capacity_for_vertex(
+                    (uint16_t)pivot,
+                    degreeBase,
+                    sh_undo_top
+                );
+
+                if (!undo_ok) {
+                    unsigned int ov = atomicAdd(debug_overflow, 1);
+
+                    if (ov < 8) {
+                        printf("Undo overflow before include: tiny=%u parent=%u idx=%d "
+                              "pivot=%u undo_top=%u degree=%u cap=%u log_len=%u depth=%d\n",
+                              tiny_id,
+                              tt.parent_task_pos,
+                              tt.idx,
+                              (unsigned int)pivot,
+                              sh_undo_top,
+                              degreeBase[pivot],
+                              LOCAL_UNDO_CAP,
+                              tt.log_len,
+                              depth);
+                    }
+                }
+            }
+
+            undo_ok = __shfl_sync(0xffffffff, undo_ok, 0);
+
+            if (!undo_ok) {
+                break;
+            }
+
+            __syncwarp();
 
             local_exclude_vertex_debug(
                 pivot,
@@ -3316,13 +3395,12 @@ void resumeTinyTasks_continue_debug(S_pointers s,
             );
 
             __syncwarp();
-
-            local_branch_state[depth] = 2;
             depth++;
             continue;
         }
 
         // Both branches done at this depth. Backtrack.
+        if (local_branch_state[depth] == 2){
         restore_to_size_mark(
           marks[depth],
           sh_labels,
@@ -3334,16 +3412,19 @@ void resumeTinyTasks_continue_debug(S_pointers s,
           &sh_cand_sz,
           &sh_excl_sz
       );
-
+        local_branch_state[depth] = 0;
         __syncwarp();
 
-        local_branch_state[depth] = 0;
-
         depth--;
+        continue;
+    }
+    }
 
-        if (depth < 0) break;
-
-        local_branch_state[depth]++;
+    if (lane_id == 0 && iter_guard >= ITER_GUARD_LIMIT){
+      atomicAdd(debug_errors, 1);
+      if (tiny_id < 16){
+        printf("Continue DFS iter_guard hit tiny=%u parent=%u idx=%d depth=%d log_len=%u\n", tiny_id, tt.parent_task_pos, tt.idx, depth, tt.log_len);
+      }
     }
 }
 

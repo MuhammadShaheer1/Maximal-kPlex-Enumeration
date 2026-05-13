@@ -61,4 +61,5 @@ void resumeTinyTasks_continue_debug(S_pointers s,
                                     unsigned int delta_cap,
                                     unsigned int* debug_checked,
                                     unsigned int* debug_errors,
-                                    unsigned int* debug_spilled);
+                                    unsigned int* debug_spilled,
+                                    unsigned int* debug_overflow);
