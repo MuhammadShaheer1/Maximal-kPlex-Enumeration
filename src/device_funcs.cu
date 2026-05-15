@@ -1796,14 +1796,24 @@ __device__ bool enqueue_tiny_child(int lane_id, const TinyTask& source, unsigned
   return enqueue_tiny_record(lane_id, child, PlexSz, CandSz, ExclSz, tasks, global_tasks, tailPtr, global_tail, abort, global_count);
 }
 
-__device__ bool emit_exclude_and_continue_include(int lane_id, TinyTask& source, int pivot, int k, int lb, unsigned int n, TinyTask* tasks, TinyTask* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, unsigned int* plex, unsigned int* cand, unsigned int* excl, uint16_t* neiInG, uint16_t* neiInP, unsigned int& PlexSz, unsigned int& CandSz, unsigned int& ExclSz, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase, uint8_t* commonMtx, uint32_t* adjList, BranchLog* Delta, unsigned int* delta_tail, int* abort, unsigned int* global_count)
+__device__ bool emit_exclude_and_continue_include(int lane_id, TinyTask& source, int task_idx, int pivot, int k, int lb, unsigned int n, TinyTask* tasks, TinyTask* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, unsigned int* plex, unsigned int* cand, unsigned int* excl, uint16_t* neiInG, uint16_t* neiInP, unsigned int& PlexSz, unsigned int& CandSz, unsigned int& ExclSz, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase, uint8_t* commonMtx, uint32_t* adjList, BranchLog* Delta, unsigned int* delta_tail, Task* checkpoint_tasks, uint8_t* checkpoint_labels, uint16_t* checkpoint_neiInG, uint16_t* checkpoint_neiInP, unsigned int* checkpoint_tail, int* abort, unsigned int* global_count)
 {
-  if (!enqueue_tiny_child(lane_id, source, pivot, 1u, PlexSz, CandSz - 1, ExclSz + 1, tasks, global_tasks, tailPtr, global_tail, Delta, delta_tail, abort, global_count)) return false;
+  const unsigned int childLogLen = source.log_len + 1u;
+  if (childLogLen >= CHECKPOINT_LOG_LIMIT)
+  {
+    if (!enqueue_checkpoint_exclude_task(lane_id, task_idx, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, checkpoint_tasks, checkpoint_labels, checkpoint_neiInG, checkpoint_neiInP, checkpoint_tail, abort, global_count)) return false;
+  }
+  else if (!enqueue_tiny_child(lane_id, source, pivot, 1u, PlexSz, CandSz - 1, ExclSz + 1, tasks, global_tasks, tailPtr, global_tail, Delta, delta_tail, abort, global_count)) return false;
 
   if (abort[0]) return false;
 
   bool keep_include = apply_include_branch(lane_id, k, lb, n, neighborsBase, offsetsBase, degreeBase, commonMtx, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, pivot, adjList);
   if (!keep_include) return false;
+
+  if (childLogLen >= CHECKPOINT_LOG_LIMIT)
+  {
+    return enqueue_checkpoint_task(lane_id, task_idx, n, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, checkpoint_tasks, checkpoint_labels, checkpoint_neiInG, checkpoint_neiInP, checkpoint_tail, abort, global_count);
+  }
 
   unsigned int includeLogStart = INVALID_LOG;
   unsigned int includeLogLen = 0;
@@ -2323,13 +2333,15 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
       //           neighborsBase, offsetsBase, degreeBase,
       //           commonMtxBase, adjList,
       //           Delta, delta_tail, abort, global_count);
-      if (!emit_exclude_and_continue_include(lane_id, current, pivot, k, q, n,
+      if (!emit_exclude_and_continue_include(lane_id, current, t.idx, pivot, k, q, n,
                 outTasks, global_tasks, tailPtr, global_tail,
                 plex, cand, excl, neiInG, neiInP,
                 PlexSz, CandSz, ExclSz,
                 neighborsBase, offsetsBase, degreeBase,
                 commonMtxBase, adjList,
-                Delta, delta_tail, abort, global_count)) return;
+                Delta, delta_tail,
+                checkpoint_tasks, checkpoint_labels, checkpoint_neiInG, checkpoint_neiInP, checkpoint_tail,
+                abort, global_count)) return;
       continue;
     }
     
@@ -2393,13 +2405,15 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
     //             neighborsBase, offsetsBase, degreeBase,
     //             commonMtxBase, adjList,
     //             Delta, delta_tail, abort, global_count);
-    if (!emit_exclude_and_continue_include(lane_id, current, pivot, k, q, n,
+    if (!emit_exclude_and_continue_include(lane_id, current, t.idx, pivot, k, q, n,
               outTasks, global_tasks, tailPtr, global_tail,
               plex, cand, excl, neiInG, neiInP,
               PlexSz, CandSz, ExclSz,
               neighborsBase, offsetsBase, degreeBase,
               commonMtxBase, adjList,
-              Delta, delta_tail, abort, global_count)) return;
+              Delta, delta_tail,
+              checkpoint_tasks, checkpoint_labels, checkpoint_neiInG, checkpoint_neiInP, checkpoint_tail,
+              abort, global_count)) return;
   }
 
   if (PlexSz + CandSz < q) return;

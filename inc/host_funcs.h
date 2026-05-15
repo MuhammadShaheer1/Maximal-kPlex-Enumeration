@@ -1162,7 +1162,8 @@ pn = peelG.n;
     chkerr(cudaMalloc(&task_pointers.d_delta_tail, sizeof(unsigned int)));
     chkerr(cudaMemset(task_pointers.d_delta_tail, 0, sizeof(unsigned int)));
     chkerr(cudaMalloc(&task_pointers.d_replay_stack, (size_t)WARPS * REPLAY_STACK_CAP * sizeof(unsigned int)));
-
+    chkerr(cudaMalloc(&task_pointers.d_checkpoint_tail, sizeof(unsigned int)));
+    chkerr(cudaMemset(task_pointers.d_checkpoint_tail, 0, sizeof(unsigned int)));
 
     size_t oneTask = sizeof(Task) + MAX_BLK_SIZE * sizeof(uint8_t) + 2 * MAX_BLK_SIZE * sizeof(uint16_t) + 2 * sizeof(unsigned int);
     // printf("One task takes %zu memory\n", oneTask);
