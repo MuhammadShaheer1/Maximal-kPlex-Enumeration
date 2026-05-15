@@ -1683,6 +1683,103 @@ __device__ bool enqueue_tiny_record(int lane_id, const TinyTask& source, unsigne
   return true;
 }
 
+__device__ bool reserve_checkpoint_task_slot(int lane_id, unsigned int* checkpoint_tail, int* abort, unsigned int& pos)
+{
+  if (lane_id == 0) pos = atomicAdd(&checkpoint_tail[0], 1u);
+  pos = __shfl_sync(0xFFFFFFFFu, pos, 0);
+
+  if (pos + 1 >= (MAX_CAP) - WARPS)
+  {
+    if (lane_id == 0) abort[0] = 5;
+    __syncwarp();
+    return false;
+  }
+  return true;
+}
+
+__device__ bool enqueue_checkpoint_task(int lane_id, int task_idx, unsigned int n, unsigned int* plex, unsigned int PlexSz, unsigned int* cand, unsigned int CandSz, unsigned int* excl, unsigned int ExclSz, uint16_t* neiInG, uint16_t* neiInP, Task* checkpoint_tasks, uint8_t* checkpoint_labels, uint16_t* checkpoint_neiInG, uint16_t* checkpoint_neiInP, unsigned int* checkpoint_tail, int* abort, unsigned int* global_count)
+{
+  unsigned int pos = 0;
+
+  if (!reserve_checkpoint_task_slot(lane_id, checkpoint_tail, abort, pos)) return false;
+
+  uint8_t* childLabels = checkpoint_labels + (size_t)pos * MAX_BLK_SIZE;
+  uint16_t* childNeiInG = checkpoint_neiInG + (size_t)pos * MAX_BLK_SIZE;
+  uint16_t* childNeiInP = checkpoint_neiInP + (size_t)pos * MAX_BLK_SIZE;
+
+  for (unsigned int j = lane_id; j < n; j += 32)
+  {
+    childLabels[j] = U;
+    childNeiInG[j] = neiInG[j];
+    childNeiInP[j] = neiInP[j];
+  }
+  __syncwarp();
+
+  for (unsigned int j = lane_id; j < PlexSz; j += 32) childLabels[plex[j]] = P;
+  for (unsigned int j = lane_id; j < CandSz; j += 32) childLabels[cand[j]] = C;
+  for (unsigned int j = lane_id; j < ExclSz; j += 32) childLabels[excl[j]] = X;
+  __syncwarp();
+
+  if (lane_id == 0)
+  {
+    Task &nt = checkpoint_tasks[pos];
+    nt.idx = task_idx;
+    nt.PlexSz = PlexSz;
+    nt.CandSz = CandSz;
+    nt.ExclSz = ExclSz;
+    nt.labels = childLabels;
+    nt.neiInG = childNeiInG;
+    nt.neiInP = childNeiInP;
+    atomicAdd(&global_count[0], 1);
+  }
+
+  return true;
+}
+
+__device__ bool enqueue_checkpoint_exclude_task(int lane_id, int task_idx, unsigned int n, int pivot, unsigned int* plex, unsigned int PlexSz, unsigned int* cand, unsigned int CandSz, unsigned int* excl, unsigned int ExclSz, uint16_t* neiInG, uint16_t* neiInP, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase, Task* checkpoint_tasks, uint8_t* checkpoint_labels, uint16_t* checkpoint_neiInG, uint16_t* checkpoint_neiInP, unsigned int* checkpoint_tail, int* abort, unsigned int* global_count)
+{
+  unsigned int pos = 0;
+  if (!reserve_checkpoint_task_slot(lane_id, checkpoint_tail, abort, pos)) return false;
+
+  uint8_t* childLabels = checkpoint_labels + (size_t)pos * MAX_BLK_SIZE;
+  uint16_t* childNeiInG = checkpoint_neiInG + (size_t)pos * MAX_BLK_SIZE;
+  uint16_t* childNeiInP = checkpoint_neiInP + (size_t)pos * MAX_BLK_SIZE;
+
+  for (unsigned int j = lane_id; j < n; j += 32)
+  {
+    childLabels[j] = U;
+    childNeiInG[j] = neiInG[j];
+    childNeiInP[j] = neiInP[j];
+  }
+  __syncwarp();
+
+  for (unsigned int j = lane_id; j < PlexSz; j += 32) childLabels[plex[j]] = P;
+  for (unsigned int j = lane_id; j < CandSz; j += 32) childLabels[cand[j]] = C;
+  for (unsigned int j = lane_id; j < ExclSz; j += 32) childLabels[excl[j]] = X;
+  __syncwarp();
+
+  if (lane_id == 0) childLabels[pivot] = X;
+  __syncwarp();
+
+  subG(lane_id, pivot, childNeiInG, n, neighborsBase, offsetsBase, degreeBase);
+  __syncwarp();
+
+  if (lane_id == 0)
+  {
+    Task &nt = checkpoint_tasks[pos];
+    nt.idx = task_idx;
+    nt.PlexSz = PlexSz;
+    nt.CandSz = CandSz - 1;
+    nt.ExclSz = ExclSz + 1;
+    nt.labels = childLabels;
+    nt.neiInG = childNeiInG;
+    nt.neiInP = childNeiInP;
+    atomicAdd(&global_count[0], 1);
+  }
+
+  return true;
+}
+
 __device__ bool enqueue_tiny_child(int lane_id, const TinyTask& source, unsigned int pivot, unsigned int branch_decision, unsigned int PlexSz, unsigned int CandSz, unsigned int ExclSz, TinyTask* tasks, TinyTask* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, BranchLog* Delta, unsigned int* delta_tail, int* abort, unsigned int* global_count)
 {
   TinyTask child = source;
@@ -2008,7 +2105,7 @@ __global__ void seedInitialTinyTasks(Task* parent_tasks, TinyTask* tiny_tasks, u
 // }
 
 // BNB with TinyTask strategy
-__global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsigned int* d_left, unsigned int* d_blk_counter, unsigned int* d_left_counter, uint8_t* commonMtx, Task* parent_tasks, TinyTask* tasks, TinyTask* outTasks, TinyTask* global_tasks, unsigned int N, unsigned int* tailPtr, unsigned int* global_tail, BranchLog* Delta, unsigned int* delta_tail, unsigned int* replay_stack, unsigned int* plex_count, uint16_t* d_bnb_neiInG, uint16_t* d_bnb_neiInP, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* abort, unsigned int* global_count)
+__global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsigned int* d_left, unsigned int* d_blk_counter, unsigned int* d_left_counter, uint8_t* commonMtx, Task* parent_tasks, TinyTask* tasks, TinyTask* outTasks, TinyTask* global_tasks, unsigned int N, unsigned int* tailPtr, unsigned int* global_tail, BranchLog* Delta, unsigned int* delta_tail, unsigned int* replay_stack, Task* checkpoint_tasks, uint8_t* checkpoint_labels, uint16_t* checkpoint_neiInG, uint16_t* checkpoint_neiInP, unsigned int* checkpoint_tail, unsigned int* plex_count, uint16_t* d_bnb_neiInG, uint16_t* d_bnb_neiInP, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* abort, unsigned int* global_count)
 {
   
   unsigned int global_index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -2309,7 +2406,11 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
   current.plex_sz = PlexSz;
   current.cand_sz = CandSz;
   current.excl_sz = ExclSz;
-  if (!enqueue_tiny_record(lane_id, current, PlexSz, CandSz, ExclSz, outTasks, global_tasks, tailPtr, global_tail, abort, global_count)) return;
+  if (current.log_len >= CHECKPOINT_LOG_LIMIT)
+  {
+    if (!enqueue_checkpoint_task(lane_id, t.idx, n, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, checkpoint_tasks, checkpoint_labels, checkpoint_neiInG, checkpoint_neiInP, checkpoint_tail, abort, global_count)) return;
+  }
+  else if (!enqueue_tiny_record(lane_id, current, PlexSz, CandSz, ExclSz, outTasks, global_tasks, tailPtr, global_tail, abort, global_count)) return;
   __syncwarp();
 }
 

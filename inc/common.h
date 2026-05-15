@@ -35,7 +35,8 @@
 #define TINY_OVERFLOW_CAP (MAX_CAP * 16)
 #define DELTA_CAP (MAX_CAP * 16)
 #define REPLAY_STACK_CAP MAX_BLK_SIZE
-#define LOCAL_TINY_BNB_STEPS 16
+#define LOCAL_TINY_BNB_STEPS 4
+#define CHECKPOINT_LOG_LIMIT 8
 #define INVALID_LOG 0xFFFFFFFFu
 
 using namespace std;
@@ -378,6 +379,7 @@ typedef struct T_pointers{
     BranchLog* Delta;
     unsigned int* d_delta_tail;
     unsigned int* d_replay_stack;
+    unsigned int* d_checkpoint_tail;
 
     // TinyTask* d_tiny_tasks_A;
     // TinyTask* d_tiny_tasks_B;
