@@ -1614,62 +1614,110 @@ __device__ bool apply_include_branch(int lane_id, int k, int lb, unsigned int n,
 //   __syncwarp();
 // }
 
-__device__ void enqueue_tiny_child(int lane_id, const TinyTask& source, unsigned int pivot, unsigned int branch_decision, unsigned int PlexSz, unsigned int CandSz, unsigned int ExclSz, TinyTask* tasks, TinyTask* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, BranchLog* Delta, unsigned int* delta_tail, int* abort, unsigned int* global_count)
+__device__ bool append_delta_decision(int lane_id, const TinyTask& source, unsigned int pivot, unsigned int branch_decision, BranchLog* Delta, unsigned int* delta_tail, int* abort, unsigned int& childLogStart, unsigned int& childLogLen)
+{
+  childLogLen = source.log_len + 1;
+  if (source.log_len >= REPLAY_STACK_CAP)
+  {
+    if (lane_id == 0) abort[0] = 3;
+    __syncwarp();
+    return false;
+  }
+
+  if(lane_id == 0) childLogStart = atomicAdd(&delta_tail[0], 1u);
+  childLogStart = __shfl_sync(0xFFFFFFFFu, childLogStart, 0);
+
+  if (childLogStart >= DELTA_CAP)
+  {
+    if (lane_id == 0) abort[0] = 2;
+    __syncwarp();
+    return false;
+  }
+  if (lane_id == 0)
+  {
+    Delta[childLogStart].pivot = pivot;
+    Delta[childLogStart].branch_decision = branch_decision;
+    Delta[childLogStart].prev = source.log_start;
+  }
+
+  return true;
+}
+
+__device__ bool enqueue_tiny_record(int lane_id, const TinyTask& source, unsigned int PlexSz, unsigned int CandSz, unsigned int ExclSz, TinyTask* tasks, TinyTask* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, int* abort, unsigned int* global_count)
 {
   TinyTask* localTasks = tasks;
 
   unsigned int pos;
   if (lane_id == 0) pos = atomicAdd(&tailPtr[0], 1u);
-  pos = __shfl_sync(0xFFFFFFFF, pos, 0);
+  pos = __shfl_sync(0xFFFFFFFFu, pos, 0);
 
-  if (pos + 1 > (SMALL_CAP)-WARPS)
+  if (pos + 1 > (TINY_FRONTIER_CAP)-WARPS)
   {
     if (lane_id == 0)
     {
       atomicSub(&tailPtr[0], 1);
       pos = atomicAdd(&global_tail[0], 1u);
     }
-    pos = __shfl_sync(0xFFFFFFFF, pos, 0);
-    if (pos + 1 >= (MAX_CAP)-WARPS)
+    pos = __shfl_sync(0xFFFFFFFFu, pos, 0);
+    if (pos + 1 >= (TINY_OVERFLOW_CAP) - WARPS)
     {
       if (lane_id == 0) abort[0] = 1;
       __syncwarp();
-      return;
+      return false;
     }
     localTasks = global_tasks;
   }
 
-  const unsigned int childLogLen = source.log_len + 1;
-  unsigned int childLogStart;
-  if (lane_id == 0) childLogStart = atomicAdd(&delta_tail[0], childLogLen);
-  childLogStart = __shfl_sync(0xFFFFFFFF, childLogStart, 0);
-
-  if (childLogStart + childLogLen > DELTA_CAP)
-  {
-    if (lane_id == 0) abort[0] = 1;
-    __syncwarp();
-    return;
-  }
-
-  for (unsigned int j = lane_id; j < source.log_len; j += 32)
-  {
-    Delta[childLogStart + j] = Delta[source.log_start + j];
-  }
-
   if (lane_id == 0)
   {
-    Delta[childLogStart + source.log_len].pivot = pivot;
-    Delta[childLogStart + source.log_len].branch_decision = branch_decision;
-
     TinyTask &nt = localTasks[pos];
     nt.parent_task_pos = source.parent_task_pos;
-    nt.log_start = childLogStart;
-    nt.log_len = childLogLen;
+    nt.log_start = source.log_start;
+    nt.log_len = source.log_len;
     nt.plex_sz = PlexSz;
     nt.cand_sz = CandSz;
     nt.excl_sz = ExclSz;
     atomicAdd(&global_count[0], 1);
   }
+
+  return true;
+}
+
+__device__ bool enqueue_tiny_child(int lane_id, const TinyTask& source, unsigned int pivot, unsigned int branch_decision, unsigned int PlexSz, unsigned int CandSz, unsigned int ExclSz, TinyTask* tasks, TinyTask* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, BranchLog* Delta, unsigned int* delta_tail, int* abort, unsigned int* global_count)
+{
+  TinyTask child = source;
+  unsigned int childLogStart = INVALID_LOG;
+  unsigned int childLogLen = 0;
+  if (!append_delta_decision(lane_id, source, pivot, branch_decision, Delta, delta_tail, abort, childLogStart, childLogLen)) return false;
+
+  child.log_start = childLogStart;
+  child.log_len = childLogLen;
+  child.plex_sz = PlexSz;
+  child.cand_sz = CandSz;
+  child.excl_sz = ExclSz;
+
+  return enqueue_tiny_record(lane_id, child, PlexSz, CandSz, ExclSz, tasks, global_tasks, tailPtr, global_tail, abort, global_count);
+}
+
+__device__ bool emit_exclude_and_continue_include(int lane_id, TinyTask& source, int pivot, int k, int lb, unsigned int n, TinyTask* tasks, TinyTask* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, unsigned int* plex, unsigned int* cand, unsigned int* excl, uint16_t* neiInG, uint16_t* neiInP, unsigned int& PlexSz, unsigned int& CandSz, unsigned int& ExclSz, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase, uint8_t* commonMtx, uint32_t* adjList, BranchLog* Delta, unsigned int* delta_tail, int* abort, unsigned int* global_count)
+{
+  if (!enqueue_tiny_child(lane_id, source, pivot, 1u, PlexSz, CandSz - 1, ExclSz + 1, tasks, global_tasks, tailPtr, global_tail, Delta, delta_tail, abort, global_count)) return false;
+
+  if (abort[0]) return false;
+
+  bool keep_include = apply_include_branch(lane_id, k, lb, n, neighborsBase, offsetsBase, degreeBase, commonMtx, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, pivot, adjList);
+  if (!keep_include) return false;
+
+  unsigned int includeLogStart = INVALID_LOG;
+  unsigned int includeLogLen = 0;
+  if (!append_delta_decision(lane_id, source, pivot, 0u, Delta, delta_tail, abort, includeLogStart, includeLogLen)) return false;
+
+  source.log_start = includeLogStart;
+  source.log_len = includeLogLen;
+  source.plex_sz = PlexSz;
+  source.cand_sz = CandSz;
+  source.excl_sz = ExclSz;
+  return true;
 }
 
 // __device__ void branchInCand2(int warp_id, int lane_id, int minIndex, int idx, int k, int lb, unsigned int PlexSz, unsigned int CandSz, unsigned int ExclSz, unsigned int* local_n, Task* tasks, Task* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, unsigned int* plex, unsigned int* cand, unsigned int* excl, uint16_t* neiInG, uint16_t* neiInP, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase,uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, uint8_t* commonMtx, unsigned long long* cycles, uint32_t* adjList, uint16_t* local_sat, int* abort, unsigned int* global_count)
@@ -1741,7 +1789,7 @@ __global__ void seedInitialTinyTasks(Task* parent_tasks, TinyTask* tiny_tasks, u
   Task parent = parent_tasks[parent_start + tid];
   TinyTask &tiny = tiny_tasks[tid];
   tiny.parent_task_pos = parent_start + tid;
-  tiny.log_start = 0;
+  tiny.log_start = INVALID_LOG;
   tiny.log_len = 0;
   tiny.plex_sz = parent.PlexSz;
   tiny.cand_sz = parent.CandSz;
@@ -1960,7 +2008,7 @@ __global__ void seedInitialTinyTasks(Task* parent_tasks, TinyTask* tiny_tasks, u
 // }
 
 // BNB with TinyTask strategy
-__global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsigned int* d_left, unsigned int* d_blk_counter, unsigned int* d_left_counter, uint8_t* commonMtx, Task* parent_tasks, TinyTask* tasks, TinyTask* outTasks, TinyTask* global_tasks, unsigned int N, unsigned int* tailPtr, unsigned int* global_tail, BranchLog* Delta, unsigned int* delta_tail, unsigned int* plex_count, uint16_t* d_bnb_neiInG, uint16_t* d_bnb_neiInP, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* abort, unsigned int* global_count)
+__global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsigned int* d_left, unsigned int* d_blk_counter, unsigned int* d_left_counter, uint8_t* commonMtx, Task* parent_tasks, TinyTask* tasks, TinyTask* outTasks, TinyTask* global_tasks, unsigned int N, unsigned int* tailPtr, unsigned int* global_tail, BranchLog* Delta, unsigned int* delta_tail, unsigned int* replay_stack, unsigned int* plex_count, uint16_t* d_bnb_neiInG, uint16_t* d_bnb_neiInP, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* abort, unsigned int* global_count)
 {
   
   unsigned int global_index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -2029,178 +2077,239 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
   initializePCX(lane_id, labelsBase, n, plex, cand, excl);
   __syncwarp();
 
+  if (tiny.log_len > REPLAY_STACK_CAP)
+  {
+    if (lane_id == 0) abort[0] = 3;
+    __syncwarp();
+    return;
+  }
+
+  unsigned int* replay = replay_stack + warp_id * REPLAY_STACK_CAP;
+
+  if (lane_id == 0)
+  {
+    unsigned int entry_pos = tiny.log_start;
+    for (unsigned int log_pos = 0; log_pos < tiny.log_len; log_pos++)
+    {
+      if (entry_pos == INVALID_LOG || entry_pos >= DELTA_CAP)
+      {
+        abort[0] = 4;
+        break;
+      }
+      replay[tiny.log_len - 1u - log_pos] = entry_pos;
+      entry_pos = Delta[entry_pos].prev;
+    }
+  }
+  __syncwarp();
+  if (abort[0]) return;
+
   for (unsigned int log_pos = 0; log_pos < tiny.log_len; log_pos++)
   {
-    BranchLog entry = Delta[tiny.log_start + log_pos];
-    if (entry.branch_decision == 1u)
+    unsigned int replay_pivot = 0;
+    unsigned int replay_decision = 0;
+    if (lane_id == 0)
     {
-      apply_exclude_branch(lane_id, n, cand, CandSz, excl, ExclSz, neiInG, entry.pivot, neighborsBase, offsetsBase, degreeBase);
+      BranchLog entry = Delta[replay[log_pos]];
+      replay_pivot = entry.pivot;
+      replay_decision = entry.branch_decision;
+    }
+    replay_pivot = __shfl_sync(0xFFFFFFFFu, replay_pivot, 0);
+    replay_decision = __shfl_sync(0xFFFFFFFFu, replay_decision, 0);
+    if (replay_decision == 1u)
+    {
+      apply_exclude_branch(lane_id, n, cand, CandSz, excl, ExclSz, neiInG, replay_pivot, neighborsBase, offsetsBase, degreeBase);
     }
     else
     {
-      bool keep = apply_include_branch(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, entry.pivot, adjList);
+      bool keep = apply_include_branch(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, replay_pivot, adjList);
       if (!keep) return;
     }
   }
 
-  if (PlexSz + CandSz < q) return;
-    
-  if (CandSz == 0)
+  TinyTask current = tiny;
+  current.plex_sz = PlexSz;
+  current.cand_sz = CandSz;
+  current.excl_sz = ExclSz;
+
+  for (int local_step = 0; local_step < LOCAL_TINY_BNB_STEPS; local_step++)
   {
-    __syncwarp();
-    if (ExclSz == 0 && PlexSz >= q &&
-        isMaximal_opt(lane_id, k, PlexSz, leftBase, left_count[0], l_neighborsBase, l_offsetsBase, l_degreeBase, neiInP, neighborsBase, offsetsBase, degreeBase, plex, n, local_sat, local_commons, local_uni))
+    if (PlexSz + CandSz < q) return;
+      
+    if (CandSz == 0)
     {
-      if(lane_id == 0) atomicAdd(&plex_count[0], 1);
-    }
-    return;
-  }
-  __syncwarp();
-   
-    
-  int minnei_Plex = INT_MAX;
-  int pivot = -1;
-  int minnei_Cand = INT_MAX;
-
-  for (int i = lane_id; i < PlexSz; i+=32)
-  {
-    const int v = plex[i];
-    if (neiInG[v] < minnei_Plex)
-    {
-      minnei_Plex = neiInG[v];
-      pivot = v;
-    }
-  }
-
-    
-
-  for (int offset = 16; offset > 0; offset >>= 1)
-  {
-    int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei_Plex, offset);
-    int otherIdx = __shfl_down_sync(0xFFFFFFFF, pivot, offset);
-    if (otherMin < minnei_Plex || (otherMin == minnei_Plex && otherIdx < pivot))
-    {
-      minnei_Plex = otherMin;
-      pivot = otherIdx;
-    }
-  }
-
-  minnei_Plex = __shfl_sync(0xFFFFFFFF, minnei_Plex, 0);
-  pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
-
-  int pivot_plex = pivot;
-    
-  if (minnei_Plex + k  < max(q, PlexSz)) return;
-    
-  if (minnei_Plex + k < PlexSz + CandSz)
-  {     
-    minnei_Cand = INT_MAX;
-    pivot = -1;
-    for (int i = lane_id; i < CandSz; i+=32)
-    {
-      const int v = cand[i];
-      int check = v * n + pivot_plex;
-      if (!((adjList[check >> 5] >> (check & 31)) & 1u))
+      __syncwarp();
+      if (ExclSz == 0 && PlexSz >= q &&
+          isMaximal_opt(lane_id, k, PlexSz, leftBase, left_count[0], l_neighborsBase, l_offsetsBase, l_degreeBase, neiInP, neighborsBase, offsetsBase, degreeBase, plex, n, local_sat, local_commons, local_uni))
       {
-        if (neiInG[v] < minnei_Cand)
-        {
-          minnei_Cand = neiInG[v];
-          pivot = v;
-        }
-        else if (neiInG[v] == minnei_Cand && neiInP[pivot] > neiInP[v])
-        {
-          pivot = v;
-        }
+        if(lane_id == 0) atomicAdd(&plex_count[0], 1);
+      }
+      return;
+    }
+    __syncwarp();
+    
+      
+    int minnei_Plex = INT_MAX;
+    int pivot = -1;
+    int minnei_Cand = INT_MAX;
+
+    for (int i = lane_id; i < PlexSz; i+=32)
+    {
+      const int v = plex[i];
+      if (neiInG[v] < minnei_Plex)
+      {
+        minnei_Plex = neiInG[v];
+        pivot = v;
       }
     }
-        
+
+      
+
     for (int offset = 16; offset > 0; offset >>= 1)
     {
-      int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei_Cand, offset);
+      int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei_Plex, offset);
       int otherIdx = __shfl_down_sync(0xFFFFFFFF, pivot, offset);
-      if (otherMin < minnei_Cand || (otherMin == minnei_Cand && otherIdx != -1 && neiInP[pivot] > neiInP[otherIdx]))
+      if (otherMin < minnei_Plex || (otherMin == minnei_Plex && otherIdx < pivot))
       {
-        minnei_Cand = otherMin;
+        minnei_Plex = otherMin;
         pivot = otherIdx;
       }
     }
 
-    minnei_Cand = __shfl_sync(0xFFFFFFFF, minnei_Cand, 0);
+    minnei_Plex = __shfl_sync(0xFFFFFFFF, minnei_Plex, 0);
     pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
-         
-    // if (lane_id == 0) printf("Pivot: %d\n", pivot);
-    branchInCand2(lane_id, tiny, pivot, k, q, n,
-              outTasks, global_tasks, tailPtr, global_tail,
-              plex, cand, excl, neiInG, neiInP,
-              PlexSz, CandSz, ExclSz,
-              neighborsBase, offsetsBase, degreeBase,
-              commonMtxBase, adjList,
-              Delta, delta_tail, abort, global_count);
-    return;
-  }
 
-   
-   
-  int minnei = minnei_Plex;
-
-  for (int i = lane_id; i < CandSz; i+=32)
-  {
-    const int v = cand[i];
-    if (neiInG[v] < minnei)
-    {
-      minnei = neiInG[v];
-      pivot = v;
-    }
-    else if (neiInG[v] == minnei && neiInP[pivot] > neiInP[v])
-    {
-      pivot = v;
-    }
-  }
-
-  for(int offset = 16; offset > 0; offset >>= 1)
-  {
-    int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei, offset);
-    int otherIdx = __shfl_down_sync(0xFFFFFFFF, pivot, offset);
-
-    if (otherMin < minnei || (otherMin == minnei && otherIdx != -1 && neiInP[pivot] > neiInP[otherIdx]))
-    {
-      minnei = otherMin;
-      pivot = otherIdx;
-    }
-  }
-  minnei = __shfl_sync(0xFFFFFFFF, minnei, 0);
-  pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
-  if (minnei >= (PlexSz + CandSz - k))
-  {
-    if (PlexSz + CandSz < q) return;
-    bool flag = false;
-        
-    for (int i = lane_id; i < ExclSz; i+=32)
-    {
-      const int v = excl[i];
-      if (isKplexPC2(v, k, PlexSz+CandSz, PlexSz, CandSz, neiInG, plex, cand, n, neighborsBase, offsetsBase, degreeBase, adjList))
+    int pivot_plex = pivot;
+      
+    if (minnei_Plex + k  < max(q, PlexSz)) return;
+      
+    if (minnei_Plex + k < PlexSz + CandSz)
+    {     
+      minnei_Cand = INT_MAX;
+      pivot = -1;
+      for (int i = lane_id; i < CandSz; i+=32)
       {
-        flag = true;
+        const int v = cand[i];
+        int check = v * n + pivot_plex;
+        if (!((adjList[check >> 5] >> (check & 31)) & 1u))
+        {
+          if (neiInG[v] < minnei_Cand)
+          {
+            minnei_Cand = neiInG[v];
+            pivot = v;
+          }
+          else if (neiInG[v] == minnei_Cand && neiInP[pivot] > neiInP[v])
+          {
+            pivot = v;
+          }
+        }
+      }
+          
+      for (int offset = 16; offset > 0; offset >>= 1)
+      {
+        int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei_Cand, offset);
+        int otherIdx = __shfl_down_sync(0xFFFFFFFF, pivot, offset);
+        if (otherMin < minnei_Cand || (otherMin == minnei_Cand && otherIdx != -1 && neiInP[pivot] > neiInP[otherIdx]))
+        {
+          minnei_Cand = otherMin;
+          pivot = otherIdx;
+        }
+      }
+
+      minnei_Cand = __shfl_sync(0xFFFFFFFF, minnei_Cand, 0);
+      pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
+          
+      // if (lane_id == 0) printf("Pivot: %d\n", pivot);
+      // branchInCand2(lane_id, tiny, pivot, k, q, n,
+      //           outTasks, global_tasks, tailPtr, global_tail,
+      //           plex, cand, excl, neiInG, neiInP,
+      //           PlexSz, CandSz, ExclSz,
+      //           neighborsBase, offsetsBase, degreeBase,
+      //           commonMtxBase, adjList,
+      //           Delta, delta_tail, abort, global_count);
+      if (!emit_exclude_and_continue_include(lane_id, current, pivot, k, q, n,
+                outTasks, global_tasks, tailPtr, global_tail,
+                plex, cand, excl, neiInG, neiInP,
+                PlexSz, CandSz, ExclSz,
+                neighborsBase, offsetsBase, degreeBase,
+                commonMtxBase, adjList,
+                Delta, delta_tail, abort, global_count)) return;
+      continue;
+    }
+    
+    int minnei = minnei_Plex;
+
+    for (int i = lane_id; i < CandSz; i+=32)
+    {
+      const int v = cand[i];
+      if (neiInG[v] < minnei)
+      {
+        minnei = neiInG[v];
+        pivot = v;
+      }
+      else if (neiInG[v] == minnei && neiInP[pivot] > neiInP[v])
+      {
+        pivot = v;
       }
     }
-        
-    if (__any_sync(0xFFFFFFFF, flag)) return;
-         
-    if (isMaximalPC_opt(lane_id, k, PlexSz, CandSz, PlexSz+CandSz, leftBase, left_count[0], l_neighborsBase, l_offsetsBase, l_degreeBase, neiInG, neighborsBase, offsetsBase, degreeBase, plex, cand, n, local_sat, local_commons, local_uni))
-    {
-      if (lane_id == 0) atomicAdd(&plex_count[0], 1);
-    }
-        
-    return;
-  }
 
-  branchInCand2(lane_id, tiny, pivot, k, q, n,
+    for(int offset = 16; offset > 0; offset >>= 1)
+    {
+      int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei, offset);
+      int otherIdx = __shfl_down_sync(0xFFFFFFFF, pivot, offset);
+
+      if (otherMin < minnei || (otherMin == minnei && otherIdx != -1 && neiInP[pivot] > neiInP[otherIdx]))
+      {
+        minnei = otherMin;
+        pivot = otherIdx;
+      }
+    }
+    minnei = __shfl_sync(0xFFFFFFFF, minnei, 0);
+    pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
+    if (minnei >= (PlexSz + CandSz - k))
+    {
+      if (PlexSz + CandSz < q) return;
+      bool flag = false;
+          
+      for (int i = lane_id; i < ExclSz; i+=32)
+      {
+        const int v = excl[i];
+        if (isKplexPC2(v, k, PlexSz+CandSz, PlexSz, CandSz, neiInG, plex, cand, n, neighborsBase, offsetsBase, degreeBase, adjList))
+        {
+          flag = true;
+        }
+      }
+          
+      if (__any_sync(0xFFFFFFFF, flag)) return;
+          
+      if (isMaximalPC_opt(lane_id, k, PlexSz, CandSz, PlexSz+CandSz, leftBase, left_count[0], l_neighborsBase, l_offsetsBase, l_degreeBase, neiInG, neighborsBase, offsetsBase, degreeBase, plex, cand, n, local_sat, local_commons, local_uni))
+      {
+        if (lane_id == 0) atomicAdd(&plex_count[0], 1);
+      }
+          
+      return;
+    }
+
+    // branchInCand2(lane_id, tiny, pivot, k, q, n,
+    //             outTasks, global_tasks, tailPtr, global_tail,
+    //             plex, cand, excl, neiInG, neiInP,
+    //             PlexSz, CandSz, ExclSz,
+    //             neighborsBase, offsetsBase, degreeBase,
+    //             commonMtxBase, adjList,
+    //             Delta, delta_tail, abort, global_count);
+    if (!emit_exclude_and_continue_include(lane_id, current, pivot, k, q, n,
               outTasks, global_tasks, tailPtr, global_tail,
               plex, cand, excl, neiInG, neiInP,
               PlexSz, CandSz, ExclSz,
               neighborsBase, offsetsBase, degreeBase,
               commonMtxBase, adjList,
-              Delta, delta_tail, abort, global_count);
+              Delta, delta_tail, abort, global_count)) return;
+  }
+
+  if (PlexSz + CandSz < q) return;
+  current.plex_sz = PlexSz;
+  current.cand_sz = CandSz;
+  current.excl_sz = ExclSz;
+  if (!enqueue_tiny_record(lane_id, current, PlexSz, CandSz, ExclSz, outTasks, global_tasks, tailPtr, global_tail, abort, global_count)) return;
   __syncwarp();
 }
 

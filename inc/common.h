@@ -34,6 +34,10 @@
 #define TINY_FRONTIER_CAP (MAX_CAP * 4)
 #define TINY_OVERFLOW_CAP (MAX_CAP * 16)
 #define DELTA_CAP (MAX_CAP * 16)
+#define REPLAY_STACK_CAP MAX_BLK_SIZE
+#define LOCAL_TINY_BNB_STEPS 16
+#define INVALID_LOG 0xFFFFFFFFu
+
 using namespace std;
 
 enum : uint8_t{
@@ -294,6 +298,7 @@ struct Task{
 struct BranchLog{
     unsigned int pivot;
     unsigned int branch_decision;
+    unsigned int prev;
 };
 
 struct TinyTask {
@@ -372,6 +377,7 @@ typedef struct T_pointers{
 
     BranchLog* Delta;
     unsigned int* d_delta_tail;
+    unsigned int* d_replay_stack;
 
     // TinyTask* d_tiny_tasks_A;
     // TinyTask* d_tiny_tasks_B;

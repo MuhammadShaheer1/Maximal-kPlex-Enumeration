@@ -393,11 +393,30 @@ void initializeBNB(int initialN, T_pointers &task_pointers, P_pointers plex_poin
 
                 for (unsigned int w = 0; w < waves; w++)
                 {
-                    BNB<<<BLK_NUMS, BLK_DIM>>>(w, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, task_pointers.d_tasks_A, Q_in, Q_out, task_pointers.d_tiny_tasks_A, numTasks, tail_out, task_pointers.d_tiny_tail_A, task_pointers.Delta, task_pointers.d_delta_tail, plex_count, bnb_neiInG, bnb_neiInP, d_sat, d_commons, d_uni, cycles, d_adj, d_abort, global_count);
+                    BNB<<<BLK_NUMS, BLK_DIM>>>(w, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, task_pointers.d_tasks_A, Q_in, Q_out, task_pointers.d_tiny_tasks_A, numTasks, tail_out, task_pointers.d_tiny_tail_A, task_pointers.Delta, task_pointers.d_delta_tail, task_pointers.d_replay_stack, plex_count, bnb_neiInG, bnb_neiInP, d_sat, d_commons, d_uni, cycles, d_adj, d_abort, global_count);
                     cudaMemcpy(&h_abort, d_abort, sizeof(int), cudaMemcpyDeviceToHost);
                     if (h_abort) 
                     {
-                        printf("Maximum Capacity Reached on level %d\n", initialN);
+                        unsigned int h_tail_in = 0;
+                        unsigned int h_tail_out = 0;
+                        unsigned int h_tiny_overflow_tail = 0;
+                        unsigned int h_delta_tail = 0;
+                        cudaMemcpy(&h_tail_in, tail_in, sizeof(unsigned int), cudaMemcpyDeviceToHost);
+                        cudaMemcpy(&h_tail_out, tail_out, sizeof(unsigned int), cudaMemcpyDeviceToHost);
+                        cudaMemcpy(&h_tiny_overflow_tail, task_pointers.d_tiny_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
+                        cudaMemcpy(&h_delta_tail, task_pointers.d_delta_tail, sizeof(unsigned int), cudaMemcpyDeviceToHost);
+
+                        if (h_abort == 1) printf("Maximum TinyTask Capacity Reached on level %d\n", initialN);
+                        else if (h_abort == 2) printf("Maximum Delta Capacity Reached on level %d\n", initialN);
+                        else if (h_abort == 3) printf("Maximum Replay Stack Capacity Reached on level %d\n", initialN);
+                        else if (h_abort == 4) printf("Invalid Linked Delta Log on level %d\n", initialN);
+                        printf("TinyTask tails: in=%u out=%u overflow=%u/%u, Delta=%u/%u\n",
+                               h_tail_in,
+                               h_tail_out,
+                               h_tiny_overflow_tail,
+                               (unsigned int)TINY_OVERFLOW_CAP,
+                               h_delta_tail,
+                               (unsigned int)DELTA_CAP);
                         break;
                     }
                 }
@@ -423,7 +442,7 @@ void initializeBNB(int initialN, T_pointers &task_pointers, P_pointers plex_poin
         tiny_tail = tiny_head;
         chkerr(cudaMemcpy(task_pointers.d_tiny_tail_A, &tiny_tail, sizeof(unsigned int), cudaMemcpyHostToDevice));
         }
-        if(h_abort) break;
+        if (h_abort) break;
     }
     // printf("tailmax: %d\n", tail_max);
     cudaMemset(task_pointers.d_tail_A, 0, sizeof(unsigned int));
@@ -1005,6 +1024,8 @@ pn = peelG.n;
 
     uint16_t* neiInG;
     uint16_t* neiInP; 
+    uint16_t* bnb_neiInG;
+    uint16_t* bnb_neiInP;
 
     unsigned long long* cycles;
     int *d_abort_flag = nullptr;
@@ -1028,6 +1049,9 @@ pn = peelG.n;
 
     cudaMalloc(&neiInG, WARPS * MAX_BLK_SIZE * sizeof(uint16_t));
     cudaMalloc(&neiInP, WARPS * MAX_BLK_SIZE * sizeof(uint16_t));
+
+    cudaMalloc(&bnb_neiInG, WARPS * MAX_BLK_SIZE * sizeof(uint16_t));
+    cudaMalloc(&bnb_neiInP, WARPS * MAX_BLK_SIZE * sizeof(uint16_t));
 
     cudaMalloc(&d_sat, WARPS * MAX_BLK_SIZE * sizeof(uint16_t));
     cudaMalloc(&d_commons, WARPS * MAX_BLK_SIZE * sizeof(uint16_t));
@@ -1094,6 +1118,7 @@ pn = peelG.n;
     chkerr(cudaMalloc(&task_pointers.Delta, (size_t)DELTA_CAP * sizeof(BranchLog)));
     chkerr(cudaMalloc(&task_pointers.d_delta_tail, sizeof(unsigned int)));
     chkerr(cudaMemset(task_pointers.d_delta_tail, 0, sizeof(unsigned int)));
+    chkerr(cudaMalloc(&task_pointers.d_replay_stack, (size_t)WARPS * REPLAY_STACK_CAP * sizeof(unsigned int)));
 
 
     size_t oneTask = sizeof(Task) + MAX_BLK_SIZE * sizeof(uint8_t) + 2 * MAX_BLK_SIZE * sizeof(uint16_t) + 2 * sizeof(unsigned int);
@@ -1809,7 +1834,7 @@ pn = peelG.n;
             d_abort_flag = d_abort2;
             d_abort2 = tmp;
 
-            initializeBNB(6, task_pointers, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, plex_count, neiInG, neiInP, d_sat, d_commons, d_uni, cycles, d_adj, d_abort3, global_count);
+            initializeBNB(6, task_pointers, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, plex_count, bnb_neiInG, bnb_neiInP, d_sat, d_commons, d_uni, cycles, d_adj, d_abort3, global_count);
             // initializeBNB2(6, task_pointers, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, plex_count, d_sat, d_commons, d_uni, cycles, d_adj, d_abort3, buf, h_task_stage, d_state2, d_res2, recExcl, recCand);
 
             // cudaEventRecord(event_stop);
