@@ -339,11 +339,9 @@ void initializeBNB(int initialN, T_pointers &task_pointers, P_pointers plex_poin
 {
     cudaMemset(d_abort, 0, sizeof(int));
     int h_abort = 0;
-    unsigned int checkpoint_read = 0;
-    cudaMemcpy(&checkpoint_read, task_pointers.d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-    chkerr(cudaMemcpy(task_pointers.d_checkpoint_tail, &checkpoint_read, sizeof(unsigned int), cudaMemcpyHostToDevice));
+    chkerr(cudaMemset(task_pointers.d_tail_B, 0, sizeof(unsigned int)));
 
-    auto drainTinyFrontier = [&]() -> bool
+    auto drainTinyFrontier = [&](Task* parent_tasks, Task* checkpoint_tasks, uint8_t* checkpoint_labels, uint16_t* checkpoint_neiInG, uint16_t* checkpoint_neiInP, unsigned int* checkpoint_tail, unsigned int checkpoint_cap) -> bool
     {
         while (true)
         {
@@ -365,7 +363,7 @@ void initializeBNB(int initialN, T_pointers &task_pointers, P_pointers plex_poin
 
                 for (unsigned int w = 0; w < waves; w++)
                 {
-                    BNB<<<BLK_NUMS, BLK_DIM>>>(w, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, task_pointers.d_tasks_A, Q_in, Q_out, task_pointers.d_tiny_tasks_A, numTasks, tail_out, task_pointers.d_tiny_tail_A, task_pointers.Delta, task_pointers.d_delta_tail, task_pointers.d_replay_stack, task_pointers.d_tasks_A, task_pointers.d_all_labels_A, task_pointers.d_all_neiInG_A, task_pointers.d_all_neiInP_A, task_pointers.d_checkpoint_tail, plex_count, bnb_neiInG, bnb_neiInP, d_sat, d_commons, d_uni, cycles, d_adj, d_abort, global_count);
+                    BNB<<<BLK_NUMS, BLK_DIM>>>(w, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, parent_tasks, Q_in, Q_out, task_pointers.d_tiny_tasks_A, numTasks, tail_out, task_pointers.d_tiny_tail_A, task_pointers.Delta, task_pointers.d_delta_tail, task_pointers.d_replay_stack, checkpoint_tasks, checkpoint_labels, checkpoint_neiInG, checkpoint_neiInP, checkpoint_tail, plex_count, bnb_neiInG, bnb_neiInP, d_sat, d_commons, d_uni, cycles, d_adj, d_abort, global_count);
                     cudaMemcpy(&h_abort, d_abort, sizeof(int), cudaMemcpyDeviceToHost);
                     if (h_abort)
                     {
@@ -427,72 +425,66 @@ void initializeBNB(int initialN, T_pointers &task_pointers, P_pointers plex_poin
         return h_abort == 0;
     };
 
-    // cudaMemcpy(&tail_max, task_pointers.d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-    while (true)
+    auto processTaskQueue = [&](Task* parent_tasks, unsigned int* parent_tail, Task* checkpoint_tasks, uint8_t* checkpoint_labels, uint16_t* checkpoint_neiInG, uint16_t* checkpoint_neiInP, unsigned int* checkpoint_tail, unsigned int checkpoint_cap) -> bool
     {
-        unsigned int tail;
-        // unsigned int plex;
-        cudaMemcpy(&tail, task_pointers.d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-        // cudaMemcpy(&plex, plex_count, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-        // printf("tail: %u\n", tail);
-        if (tail == 0)
-            break;
+        while (true)
+        {
+            unsigned int tail = 0;
+            cudaMemcpy(&tail, parent_tail, sizeof(unsigned int), cudaMemcpyDeviceToHost);
+            if (tail == 0) break;
 
-        unsigned int batch;
-        batch = std::min((unsigned)5*WARPS, tail);
-        // else batch = std::min((unsigned)3*WARPS, tail);
+            unsigned int batch = std::min((unsigned)5*WARPS, tail);
+            unsigned int head = tail - batch;
 
-        unsigned int head = tail - batch;
-        
-        chkerr(cudaMemset(task_pointers.d_delta_tail, 0, sizeof(unsigned int)));
-        chkerr(cudaMemset(task_pointers.d_tiny_tail_A, 0, sizeof(unsigned int)));
-        chkerr(cudaMemset(task_pointers.d_tiny_tail_C, 0, sizeof(unsigned int)));
+            chkerr(cudaMemset(task_pointers.d_delta_tail, 0, sizeof(unsigned int)));
+            chkerr(cudaMemset(task_pointers.d_tiny_tail_A, 0, sizeof(unsigned int)));
+            chkerr(cudaMemset(task_pointers.d_tiny_tail_C, 0, sizeof(unsigned int)));
 
-        unsigned int threads = 256;
-        unsigned int blocks = (batch + threads - 1) / threads;
-        seedInitialTinyTasks<<<blocks, threads>>>(task_pointers.d_tasks_A, task_pointers.d_tiny_tasks_B, head, batch);
-        cudaDeviceSynchronize();
-        checkCudaError(initialN);
+            unsigned int threads = 256;
+            unsigned int blocks = (batch + threads - 1) / threads;
+            seedInitialTinyTasks<<<blocks, threads>>>(parent_tasks, task_pointers.d_tiny_tasks_B, head, batch);
+            cudaDeviceSynchronize();
+            checkCudaError(initialN);
 
-        chkerr(cudaMemcpy(task_pointers.d_tiny_tail_B, &batch, sizeof(unsigned int), cudaMemcpyHostToDevice));
+            chkerr(cudaMemcpy(task_pointers.d_tiny_tail_B, &batch, sizeof(unsigned int), cudaMemcpyHostToDevice));
+
+            tail = head;
+            cudaMemcpy(parent_tail, &tail, sizeof(tail), cudaMemcpyHostToDevice);
+
+            if (!drainTinyFrontier(parent_tasks, checkpoint_tasks, checkpoint_labels, checkpoint_neiInG, checkpoint_neiInP, checkpoint_tail, checkpoint_cap)) return false;
+        }
+
+        return h_abort == 0;
+    };
 
 
-        tail = head;
-        cudaMemcpy(task_pointers.d_tail_A, &tail, sizeof(tail), cudaMemcpyHostToDevice);
-
-        if (!drainTinyFrontier()) break;
-    }
-
-    while (!h_abort)
+    if (processTaskQueue(task_pointers.d_tasks_A, task_pointers.d_tail_A, task_pointers.d_tasks_B, task_pointers.d_all_labels_B, task_pointers.d_all_neiInG_B, task_pointers.d_all_neiInP_B, task_pointers.d_tail_B, CHECKPOINT_TASK_CAP))
     {
-        unsigned int checkpoint_tail = 0;
-        cudaMemcpy(&checkpoint_tail, task_pointers.d_checkpoint_tail, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-        if (checkpoint_read >= checkpoint_tail) break;
+        while (!h_abort)
+        {
+            unsigned int tail_B = 0;
+            cudaMemcpy(&tail_B, task_pointers.d_tail_B, sizeof(unsigned int), cudaMemcpyDeviceToHost);
+            if (tail_B == 0) break;
 
-        unsigned int pending = checkpoint_tail - checkpoint_read;
-        unsigned int batch = std::min((unsigned)5*WARPS, pending);
+            chkerr(cudaMemset(task_pointers.d_tail_A, 0, sizeof(unsigned int)));
+            if (!processTaskQueue(task_pointers.d_tasks_B, task_pointers.d_tail_B, task_pointers.d_tasks_A, task_pointers.d_all_labels_A, task_pointers.d_all_neiInG_A, task_pointers.d_all_neiInP_A, task_pointers.d_tail_A, MAX_CAP)) break;
 
-        chkerr(cudaMemset(task_pointers.d_delta_tail, 0, sizeof(unsigned int)));
-        chkerr(cudaMemset(task_pointers.d_tiny_tail_A, 0, sizeof(unsigned int)));
-        chkerr(cudaMemset(task_pointers.d_tiny_tail_C, 0, sizeof(unsigned int)));
+            unsigned int tail_A = 0;
+            cudaMemcpy(&tail_A, task_pointers.d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
+            if (tail_A == 0) break;
 
-        unsigned int threads = 256;
-        unsigned int blocks = (batch + threads - 1) / threads;
-        seedInitialTinyTasks<<<blocks, threads>>>(task_pointers.d_tasks_A, task_pointers.d_tiny_tasks_B, checkpoint_read, batch);
-        cudaDeviceSynchronize();
-        checkCudaError(initialN);
-
-        checkpoint_read += batch;
-        chkerr(cudaMemcpy(task_pointers.d_tiny_tail_B, &batch, sizeof(unsigned int), cudaMemcpyHostToDevice));
-        if (!drainTinyFrontier()) break;
+            chkerr(cudaMemset(task_pointers.d_tail_B, 0, sizeof(unsigned int)));
+            if (!processTaskQueue(task_pointers.d_tasks_A, task_pointers.d_tail_A, task_pointers.d_tasks_B, task_pointers.d_all_labels_B, task_pointers.d_all_neiInG_B, task_pointers.d_all_neiInP_B, task_pointers.d_tail_B, CHECKPOINT_TASK_CAP)) break;
+        }
     }
     // printf("tailmax: %d\n", tail_max);
     cudaMemset(task_pointers.d_tail_A, 0, sizeof(unsigned int));
+    cudaMemset(task_pointers.d_tail_B, 0, sizeof(unsigned int));
     cudaMemset(task_pointers.d_tiny_tail_A, 0, sizeof(unsigned int));
     cudaMemset(task_pointers.d_tiny_tail_B, 0, sizeof(unsigned int));
     cudaMemset(task_pointers.d_tiny_tail_C, 0, sizeof(unsigned int));
     cudaMemset(task_pointers.d_delta_tail, 0, sizeof(unsigned int));
-    cudaMemset(task_pointers.d_checkpoint_tail, 0, sizeof(unsigned int));
+    // cudaMemset(task_pointers.d_checkpoint_tail, 0, sizeof(unsigned int));
 }
 
 void initializeBNB2(int initialN, T_pointers &task_pointers, P_pointers plex_pointers, S_pointers subgraph_pointers, unsigned int *d_blk, unsigned int *d_left, unsigned int *d_blk_counter, unsigned int *d_left_counter, uint8_t *commonMtx, unsigned int *plex_count, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* d_abort, HostTaskBuffer& hostBuf, HostTask* h_task_stage, unsigned int* state, unsigned int* res, unsigned int* recExcl, unsigned int* recCand)
@@ -1169,11 +1161,12 @@ pn = peelG.n;
     // printf("One task takes %zu memory\n", oneTask);
 
     size_t capacity2 = TINY_FRONTIER_CAP;
-    // cudaMalloc(&task_pointers.d_tasks_B, capacity2 * sizeof(Task));
-    // cudaMalloc(&task_pointers.d_all_labels_B, capacity2 * MAX_BLK_SIZE * sizeof(uint8_t));
-    // cudaMalloc(&task_pointers.d_all_neiInG_B, capacity2 * MAX_BLK_SIZE * sizeof(uint16_t));
-    // cudaMalloc(&task_pointers.d_all_neiInP_B, capacity2 * MAX_BLK_SIZE * sizeof(uint16_t));
-    // cudaMalloc(&task_pointers.d_tail_B, sizeof(unsigned int));
+    size_t checkpoint_capacity = CHECKPOINT_TASK_CAP;
+    cudaMalloc(&task_pointers.d_tasks_B, checkpoint_capacity * sizeof(Task));
+    cudaMalloc(&task_pointers.d_all_labels_B, checkpoint_capacity * MAX_BLK_SIZE * sizeof(uint8_t));
+    cudaMalloc(&task_pointers.d_all_neiInG_B, checkpoint_capacity * MAX_BLK_SIZE * sizeof(uint16_t));
+    cudaMalloc(&task_pointers.d_all_neiInP_B, checkpoint_capacity * MAX_BLK_SIZE * sizeof(uint16_t));
+    cudaMalloc(&task_pointers.d_tail_B, sizeof(unsigned int));
 
     cudaMalloc(&task_pointers.d_tiny_tasks_B, capacity2 * sizeof(TinyTask));
     cudaMalloc(&task_pointers.d_tiny_tail_B, sizeof(unsigned int));
