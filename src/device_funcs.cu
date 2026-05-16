@@ -2326,6 +2326,11 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
 
       minnei_Cand = __shfl_sync(0xFFFFFFFF, minnei_Cand, 0);
       pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
+
+      if (pivot == -1)
+      {
+        pivot = cand[CandSz - 1];
+      }
           
       // if (lane_id == 0) printf("Pivot: %d\n", pivot);
       // branchInCand2(lane_id, tiny, pivot, k, q, n,
