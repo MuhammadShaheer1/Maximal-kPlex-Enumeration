@@ -359,11 +359,11 @@ void initializeBNB(int initialN, T_pointers &task_pointers, P_pointers plex_poin
                     break;
                 cudaMemset(tail_out, 0, sizeof(unsigned int));
                 unsigned int numTasks = tail;
-                unsigned int waves = (numTasks) / WARPS + 1;
+                unsigned int waves = (numTasks + WARPS - 1) / WARPS;
 
                 for (unsigned int w = 0; w < waves; w++)
                 {
-                    BNB<<<BLK_NUMS, BLK_DIM>>>(w, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, parent_tasks, Q_in, Q_out, task_pointers.d_tiny_tasks_A, numTasks, tail_out, task_pointers.d_tiny_tail_A, task_pointers.Delta, task_pointers.d_delta_tail, task_pointers.d_replay_stack, checkpoint_tasks, checkpoint_labels, checkpoint_neiInG, checkpoint_neiInP, checkpoint_tail, plex_count, bnb_neiInG, bnb_neiInP, d_sat, d_commons, d_uni, cycles, d_adj, d_abort, global_count);
+                    BNB<<<BLK_NUMS, BLK_DIM>>>(w, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, parent_tasks, Q_in, Q_out, task_pointers.d_tiny_tasks_A, numTasks, tail_out, task_pointers.d_tiny_tail_A, task_pointers.Delta, task_pointers.d_delta_tail, task_pointers.d_replay_stack, checkpoint_tasks, checkpoint_labels, checkpoint_neiInG, checkpoint_neiInP, checkpoint_tail, checkpoint_cap, plex_count, bnb_neiInG, bnb_neiInP, d_sat, d_commons, d_uni, cycles, d_adj, d_abort, global_count);
                     cudaMemcpy(&h_abort, d_abort, sizeof(int), cudaMemcpyDeviceToHost);
                     if (h_abort)
                     {
@@ -1162,15 +1162,15 @@ pn = peelG.n;
 
     size_t capacity2 = TINY_FRONTIER_CAP;
     size_t checkpoint_capacity = CHECKPOINT_TASK_CAP;
-    cudaMalloc(&task_pointers.d_tasks_B, checkpoint_capacity * sizeof(Task));
-    cudaMalloc(&task_pointers.d_all_labels_B, checkpoint_capacity * MAX_BLK_SIZE * sizeof(uint8_t));
-    cudaMalloc(&task_pointers.d_all_neiInG_B, checkpoint_capacity * MAX_BLK_SIZE * sizeof(uint16_t));
-    cudaMalloc(&task_pointers.d_all_neiInP_B, checkpoint_capacity * MAX_BLK_SIZE * sizeof(uint16_t));
-    cudaMalloc(&task_pointers.d_tail_B, sizeof(unsigned int));
+    chkerr(cudaMalloc(&task_pointers.d_tasks_B, checkpoint_capacity * sizeof(Task)));
+    chkerr(cudaMalloc(&task_pointers.d_all_labels_B, checkpoint_capacity * MAX_BLK_SIZE * sizeof(uint8_t)));
+    chkerr(cudaMalloc(&task_pointers.d_all_neiInG_B, checkpoint_capacity * MAX_BLK_SIZE * sizeof(uint16_t)));
+    chkerr(cudaMalloc(&task_pointers.d_all_neiInP_B, checkpoint_capacity * MAX_BLK_SIZE * sizeof(uint16_t)));
+    chkerr(cudaMalloc(&task_pointers.d_tail_B, sizeof(unsigned int)));
 
-    cudaMalloc(&task_pointers.d_tiny_tasks_B, capacity2 * sizeof(TinyTask));
-    cudaMalloc(&task_pointers.d_tiny_tail_B, sizeof(unsigned int));
-    cudaMemset(task_pointers.d_tiny_tail_B, 0, sizeof(unsigned int));
+    chkerr(cudaMalloc(&task_pointers.d_tiny_tasks_B, capacity2 * sizeof(TinyTask)));
+    chkerr(cudaMalloc(&task_pointers.d_tiny_tail_B, sizeof(unsigned int)));
+    chkerr(cudaMemset(task_pointers.d_tiny_tail_B, 0, sizeof(unsigned int)));
 
     // cudaMalloc(&task_pointers.d_tasks_C, capacity2 * sizeof(Task));
     // cudaMalloc(&task_pointers.d_all_labels_C, capacity2 * MAX_BLK_SIZE * sizeof(uint8_t));
@@ -1178,9 +1178,9 @@ pn = peelG.n;
     // cudaMalloc(&task_pointers.d_all_neiInP_C, capacity2 * MAX_BLK_SIZE * sizeof(uint16_t));
     // cudaMalloc(&task_pointers.d_tail_C, sizeof(unsigned int));
 
-    cudaMalloc(&task_pointers.d_tiny_tasks_C, capacity2 * sizeof(TinyTask));
-    cudaMalloc(&task_pointers.d_tiny_tail_C, sizeof(unsigned int));
-    cudaMemset(task_pointers.d_tiny_tail_C, 0 , sizeof(unsigned int));
+    chkerr(cudaMalloc(&task_pointers.d_tiny_tasks_C, capacity2 * sizeof(TinyTask)));
+    chkerr(cudaMalloc(&task_pointers.d_tiny_tail_C, sizeof(unsigned int)));
+    chkerr(cudaMemset(task_pointers.d_tiny_tail_C, 0 , sizeof(unsigned int)));
 
     // allocate_tiny_task_queues(task_pointers);
 
