@@ -22,4 +22,5 @@ int lb;
 float thres;
 int truss;
 int bd;
+int local_bnb_steps = 2;
 #endif // KPLEX_ENUM_H

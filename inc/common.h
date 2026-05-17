@@ -38,6 +38,7 @@
 #define LOCAL_TINY_BNB_STEPS 2
 #define CHECKPOINT_LOG_LIMIT 4
 #define CHECKPOINT_TASK_CAP 2 * SMALL_CAP
+// #define LOCAL_TASK_BNB_STEPS 2
 #define INVALID_LOG 0xFFFFFFFFu
 
 using namespace std;
@@ -72,6 +73,7 @@ typedef struct P_pointers{
     int k;
     int lb;
     int bd; //q-k
+    int local_bnb_steps;
     float thres;
 } P_pointers;
 
