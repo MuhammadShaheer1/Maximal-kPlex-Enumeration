@@ -41,6 +41,12 @@
 // #define LOCAL_TASK_BNB_STEPS 2
 #define INVALID_LOG 0xFFFFFFFFu
 
+#define LOCAL_DFS_STACK_FRAMES 96
+#define LOCAL_DFS_FRAME_BYTES (6 * MAX_BLK_SIZE)
+#define LOCAL_DFS_NEIG_OFFSET 0
+#define LOCAL_DFS_NEIP_OFFSET (2 * MAX_BLK_SIZE)
+#define LOCAL_DFS_VERT_OFFSET (4 * MAX_BLK_SIZE)
+
 using namespace std;
 
 enum : uint8_t{
@@ -194,6 +200,13 @@ struct Task{
          , neiInG(neiInG_)
          , neiInP(neiInP_)
     {}
+};
+
+struct LocalDfsFrame {
+    unsigned int PlexSz;
+    unsigned int CandSz;
+    unsigned int ExclSz;
+    unsigned int depth;
 };
 
 // struct TinyTask {
@@ -382,7 +395,6 @@ typedef struct T_pointers{
     BranchLog* Delta;
     unsigned int* d_delta_tail;
     unsigned int* d_replay_stack;
-    unsigned int* d_checkpoint_tail;
 
     // TinyTask* d_tiny_tasks_A;
     // TinyTask* d_tiny_tasks_B;
