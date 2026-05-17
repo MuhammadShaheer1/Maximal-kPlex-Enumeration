@@ -2205,47 +2205,42 @@ __device__ __forceinline__ size_t local_stack_nei_bytes()
   return (size_t)SMALL_CAP * (size_t)MAX_BLK_SIZE * sizeof(uint16_t);
 }
 
-__device__ __forceinline__ void local_stack_store_u16(uint8_t* stack_bytes0, uint16_t* stack_bytes1, uint16_t* stack_bytes2, size_t byte_offset, uint16_t value)
+__device__ __forceinline__ uint8_t* local_stack_byte_ptr(uint8_t* stack_bytes0, uint16_t* stack_bytes1, uint16_t* stack_bytes2, size_t byte_offset)
 {
   const size_t labels_bytes = local_stack_labels_bytes();
   const size_t nei_bytes = local_stack_nei_bytes();
 
   if (byte_offset < labels_bytes)
   {
-    *reinterpret_cast<uint16_t*>(stack_bytes0 + byte_offset) = value;
-    return;
+    return stack_bytes0 + byte_offset;
   }
 
   byte_offset -= labels_bytes;
   if (byte_offset < nei_bytes)
   {
-    *reinterpret_cast<uint16_t*>(reinterpret_cast<uint8_t*>(stack_bytes1) + byte_offset) = value;
-    return;
+    return reinterpret_cast<uint8_t*>(stack_bytes1) + byte_offset;
   }
 
   byte_offset -= nei_bytes;
-  *reinterpret_cast<uint16_t*>(reinterpret_cast<uint8_t*>(stack_bytes2) + byte_offset) = value;
+  return reinterpret_cast<uint8_t*>(stack_bytes2) + byte_offset;
+}
+
+__device__ __forceinline__ void local_stack_store_u16(uint8_t* stack_bytes0, uint16_t* stack_bytes1, uint16_t* stack_bytes2, size_t byte_offset, uint16_t value)
+{
+  uint8_t* lo = local_stack_byte_ptr(stack_bytes0, stack_bytes1, stack_bytes2, byte_offset);
+  uint8_t* hi = local_stack_byte_ptr(stack_bytes0, stack_bytes1, stack_bytes2, byte_offset + 1);
+  *lo = (uint8_t)(value & 0xFFu);
+  *hi = (uint8_t)(value >> 8); 
 }
 
 __device__ __forceinline__ uint16_t local_stack_load_u16(uint8_t* stack_bytes0, uint16_t* stack_bytes1, uint16_t* stack_bytes2, size_t byte_offset)
 {
-  const size_t labels_bytes = local_stack_labels_bytes();
-  const size_t nei_bytes = local_stack_nei_bytes();
-
-  if (byte_offset < labels_bytes)
-  {
-    return *reinterpret_cast<uint16_t*>(stack_bytes0 + byte_offset);
-  }
-
-  byte_offset -= labels_bytes;
-  if (byte_offset < nei_bytes)
-  {
-    return *reinterpret_cast<uint16_t*>(reinterpret_cast<uint8_t*>(stack_bytes1) + byte_offset);
-  }
-
-  byte_offset -= nei_bytes;
-  return *reinterpret_cast<uint16_t*>(reinterpret_cast<uint8_t*>(stack_bytes2) + byte_offset);
+  const uint16_t lo = *local_stack_byte_ptr(stack_bytes0, stack_bytes1, stack_bytes2, byte_offset);
+  const uint16_t hi = *local_stack_byte_ptr(stack_bytes0, stack_bytes1, stack_bytes2, byte_offset + 1);
+  return (uint16_t)(lo | (hi << 8));
 }
+
+
 
 __device__ bool push_exclude_snapshot(int warp_id, int lane_id, unsigned int& stack_top, LocalDfsFrame* stack_frames, uint8_t* stack_bytes0, uint16_t* stack_bytes1, uint16_t* stack_bytes2, unsigned int depth, unsigned int n, unsigned int pivot, unsigned int* plex, unsigned int PlexSz, unsigned int* cand, unsigned int CandSz, unsigned int* excl, unsigned int ExclSz, uint16_t* neiInG, uint16_t* neiInP, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase, int* abort)
 {
@@ -2277,6 +2272,7 @@ __device__ bool push_exclude_snapshot(int warp_id, int lane_id, unsigned int& st
     const unsigned int nei = neighborsBase[offsetsBase[pivot] + j];
     const size_t off = frame_base + LOCAL_DFS_NEIG_OFFSET + (size_t) nei * sizeof(uint16_t);
     uint16_t value = local_stack_load_u16(stack_bytes0, stack_bytes1, stack_bytes2, value - 1);
+    local_stack_store_u16(stack_bytes0, stack_bytes1, stack_bytes2, off, value - 1);
   }
   __syncwarp();
 
@@ -2591,6 +2587,25 @@ __global__ void rebaseTaskQueuePointers(Task* tasks, uint8_t* labels, uint16_t* 
   tasks[tid].neiInP = neiInP + (size_t)tid * MAX_BLK_SIZE;
 }
 
+__device__ int normalize_candidate_pivot(int lane_id, int pivot, unsigned int* cand, unsigned int CandSz)
+{
+  int normalized = pivot;
+  if (lane_id == 0)
+  {
+    bool found = false;
+    for (unsigned int j = 0; j < CandSz; j++)
+    {
+      if (cand[j] == (unsigned int)pivot)
+      {
+        found = true;
+        break;
+      }
+    }
+    if (!found) normalized = cand[CandSz - 1];
+  }
+  return __shfl_sync(0xFFFFFFFFu, normalized, 0);
+}
+
 // BNB with DFS Task strategy
 __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsigned int* d_left, unsigned int* d_blk_counter, unsigned int* d_left_counter, uint8_t* commonMtx, Task* tasks, Task* outTasks, Task* global_tasks, unsigned int N, unsigned int head, unsigned int* tailPtr, unsigned int* global_tail, uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, unsigned int* plex_count, uint16_t* d_bnb_neiInG, uint16_t* d_bnb_neiInP, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* abort, unsigned int* global_count)
 { 
@@ -2648,30 +2663,25 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
   initializePCX(lane_id, labelsBase, n, plex, cand, excl);
   __syncwarp();
 
-  LocalDfsFrame* stack_frames = reinterpret_cast<LocalDfsFrame*>(outTasks) + (size_t)warp_id * LOCAL_DFS_FRAME_BYTES;
-  uint8_t* stack_bytes0 = d_all_labels;
-  uint16_t* stack_bytes1 = d_all_neiInG;
-  uint16_t* stack_bytes2 = d_all_neiInP;
-  unsigned int stack_top = 0;
-  unsigned int depth = 0;
+  // LocalDfsFrame* stack_frames = reinterpret_cast<LocalDfsFrame*>(outTasks) + (size_t)warp_id * LOCAL_DFS_FRAME_BYTES;
+  // uint8_t* stack_bytes0 = d_all_labels;
+  // uint16_t* stack_bytes1 = d_all_neiInG;
+  // uint16_t* stack_bytes2 = d_all_neiInP;
+  // unsigned int stack_top = 0;
+  // unsigned int depth = 0;
 
-  unsigned int local_bnb_steps = p.local_bnb_steps;
-  if (local_bnb_steps > LOCAL_DFS_STACK_FRAMES) local_bnb_steps = LOCAL_DFS_STACK_FRAMES;
-
-  // for (int local_step = 0; local_step < p.local_bnb_steps; local_step++)
-  // {
-  while (true)
+  for (int local_step = 0; local_step < p.local_bnb_steps; local_step++)
   {
 
     if (abort[0]) return;
 
-    // if (PlexSz + CandSz < q) return;
+    if (PlexSz + CandSz < q) return;
 
-    if (PlexSz + CandSz < q)
-    {
-      if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
-      continue;
-    }
+    // if (PlexSz + CandSz < q)
+    // {
+    //   if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
+    //   continue;
+    // }
       
     if (CandSz == 0)
     {
@@ -2681,18 +2691,18 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
       {
         if(lane_id == 0) atomicAdd(&plex_count[0], 1);
       }
-      // return;
-      if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
-      continue;
+      return;
+      // if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
+      // continue;
     }
     __syncwarp();
 
-    if (depth >= local_bnb_steps)
-    {
-      if (!enqueue_global_task_from_arrays(lane_id, t.idx, n, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, global_tasks, global_tail, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
-      if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
-      continue;
-    }
+    // if (depth >= local_bnb_steps)
+    // {
+    //   if (!enqueue_global_task_from_arrays(lane_id, t.idx, n, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, global_tasks, global_tail, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
+    //   if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
+    //   continue;
+    // }
     
       
     int minnei_Plex = INT_MAX;
@@ -2727,12 +2737,12 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
 
     int pivot_plex = pivot;
       
-    // if (minnei_Plex + k  < max(q, PlexSz)) return;
-    if (minnei_Plex + k < max(q, (int)PlexSz))
-    {
-      if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
-      continue;
-    }
+    if (minnei_Plex + k  < max(q, PlexSz)) return;
+    // if (minnei_Plex + k < max(q, (int)PlexSz))
+    // {
+    //   if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
+    //   continue;
+    // }
       
     if (minnei_Plex + k < PlexSz + CandSz)
     {     
@@ -2775,22 +2785,22 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
         pivot = cand[CandSz - 1];
       }
 
-      if (stack_top >= LOCAL_DFS_STACK_FRAMES)
-      {
-        if (!enqueue_global_task_from_arrays(lane_id, t.idx, n, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, global_tasks, global_tail, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
-        if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
-        continue;
-      }
+      // if (stack_top >= LOCAL_DFS_STACK_FRAMES)
+      // {
+      //   if (!enqueue_global_task_from_arrays(lane_id, t.idx, n, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, global_tasks, global_tail, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
+      //   if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
+      //   continue;
+      // }
           
-      // if (!enqueue_exclude_task_from_arrays(lane_id, t.idx, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, outTasks, global_tasks, tailPtr, global_tail, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
-      if (!push_exclude_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, depth + 1, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, abort)) return;
+      if (!enqueue_exclude_task_from_arrays(lane_id, t.idx, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, outTasks, global_tasks, tailPtr, global_tail, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
+      // if (!push_exclude_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, depth + 1, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, abort)) return;
 
-      // if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, pivot, adjList)) return;
-      if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, pivot, adjList))
-      {
-        depth++;
-      }
-      else if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
+      if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, pivot, adjList)) return;
+      // if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, pivot, adjList))
+      // {
+      //   depth++;
+      // }
+      // else if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
       continue;
     }
     
@@ -2825,12 +2835,12 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
     pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
     if (minnei >= (PlexSz + CandSz - k))
     {
-      // if (PlexSz + CandSz < q) return;
-      if (PlexSz + CandSz < q)
-      {
-        if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
-        continue;
-      }
+      if (PlexSz + CandSz < q) return;
+      // if (PlexSz + CandSz < q)
+      // {
+      //   if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
+      //   continue;
+      // }
       bool flag = false;
           
       for (int i = lane_id; i < ExclSz; i+=32)
@@ -2842,46 +2852,47 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
         }
       }
           
-      // if (__any_sync(0xFFFFFFFF, flag)) return;
-      if (__any_sync(0xFFFFFFFFu, flag))
-      {
-        if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
-        continue;
-      }
+      if (__any_sync(0xFFFFFFFF, flag)) return;
+      // if (__any_sync(0xFFFFFFFFu, flag))
+      // {
+      //   if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
+      //   continue;
+      // }
           
       if (isMaximalPC_opt(lane_id, k, PlexSz, CandSz, PlexSz+CandSz, leftBase, left_count[0], l_neighborsBase, l_offsetsBase, l_degreeBase, neiInG, neighborsBase, offsetsBase, degreeBase, plex, cand, n, local_sat, local_commons, local_uni))
       {
         if (lane_id == 0) atomicAdd(&plex_count[0], 1);
       }
           
-      // return;
-      if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
-      continue;
+      return;
+      // if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
+      // continue;
     }
 
-    if (stack_top >= LOCAL_DFS_STACK_FRAMES)
-    {
-      if(!enqueue_global_task_from_arrays(lane_id, t.idx, n, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, global_tasks, global_tail, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
-      if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
-      continue;
-    }
+    // pivot = normalize_candidate_pivot(lane_id, pivot, cand, CandSz);
 
-    if (!push_exclude_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, depth + 1, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, abort)) return;
+    // if (stack_top >= LOCAL_DFS_STACK_FRAMES)
+    // {
+    //   if(!enqueue_global_task_from_arrays(lane_id, t.idx, n, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, global_tasks, global_tail, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
+    //   if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
+    //   continue;
+    // }
 
-    if (apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, pivot, adjList))
-    {
-      depth++;
-    }
-    else if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
+    // if (!push_exclude_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, depth + 1, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, abort)) return;
 
-  //   if (!enqueue_exclude_task_from_arrays(lane_id, t.idx, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, outTasks, global_tasks, tailPtr, global_tail, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
-  //   if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, pivot, adjList)) return;
-  // // }
+    // if (apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, pivot, adjList))
+    // {
+    //   depth++;
+    // }
+    // else if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
 
-  // if (PlexSz + CandSz < q) return;
-  // if (!enqueue_task_from_arrays(lane_id, t.idx, n, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, outTasks, global_tasks, tailPtr, global_tail, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
-  // __syncwarp();
+    if (!enqueue_exclude_task_from_arrays(lane_id, t.idx, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, outTasks, global_tasks, tailPtr, global_tail, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
+    if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, pivot, adjList)) return;
   }
+
+  if (PlexSz + CandSz < q) return;
+  if (!enqueue_task_from_arrays(lane_id, t.idx, n, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, outTasks, global_tasks, tailPtr, global_tail, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
+  __syncwarp();
 }
 
 // BNB with pivot logic: minimum neiInG/neiInP among cand
