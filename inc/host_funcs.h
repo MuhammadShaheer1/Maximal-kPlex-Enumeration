@@ -1437,7 +1437,7 @@ pn = peelG.n;
             d_abort_flag = d_abort2;
             d_abort2 = tmp;
 
-            initializeBNB(6, task_pointers, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, plex_count, neiInG, neiInP, d_sat, d_commons, d_uni, cycles, d_adj, d_abort3, global_count);
+            initializeBNB(6, task_pointers, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, plex_count, bnb_neiInG, bnb_neiInP, d_sat, d_commons, d_uni, cycles, d_adj, d_abort3, global_count);
             // initializeBNB2(6, task_pointers, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, plex_count, d_sat, d_commons, d_uni, cycles, d_adj, d_abort3, buf, h_task_stage, d_state2, d_res2, recExcl, recCand);
 
             // cudaEventRecord(event_stop);
