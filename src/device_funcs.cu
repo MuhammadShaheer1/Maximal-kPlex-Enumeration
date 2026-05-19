@@ -2606,12 +2606,214 @@ __device__ int normalize_candidate_pivot(int lane_id, int pivot, unsigned int* c
   return __shfl_sync(0xFFFFFFFFu, normalized, 0);
 }
 
+#define PCX_MASK_WORDS ((MAX_BLK_SIZE + 31) / 32)
+
+__device__ __forceinline__ bool mask_has_vertex(const uint32_t* mask, int v)
+{
+  return v >= 0 && ((mask[v >> 5] >> (v & 31)) & 1u);
+}
+
+__device__ __forceinline__ bool local_adjacent(uint32_t* adjList, unsigned int n, int u, int v)
+{
+  const unsigned int bit = (unsigned int) u * n + (unsigned int)v;
+  return ((adjList[bit >> 5] >> (bit & 31)) & 1u) != 0;
+}
+
+__device__ void build_pcx_masks(int lane_id, unsigned int* plex, unsigned int PlexSz, unsigned int* cand, unsigned int CandSz, unsigned int* excl, unsigned int ExclSz, uint32_t* Pmask, uint32_t* Cmask, uint32_t* Xmask)
+{
+  for (int w = lane_id; w < PCX_MASK_WORDS; w += 32)
+  {
+    Pmask[w] = 0;
+    Cmask[w] = 0;
+    Xmask[w] = 0;
+  }
+  __syncwarp();
+
+  for (unsigned int j = lane_id; j < PlexSz; j += 32)
+  {
+    const unsigned int v = plex[j];
+    atomicOr(&Pmask[v >> 5], 1u << (v & 31));
+  }
+  for (unsigned int j = lane_id; j < CandSz; j += 32)
+  {
+    const unsigned int v = cand[j];
+    atomicOr(&Cmask[v >> 5], 1u << (v & 31));
+  }
+  for (unsigned int j = lane_id; j < ExclSz; j += 32)
+  {
+    const unsigned int v = excl[j];
+    atomicOr(&Xmask[v >> 5], 1u << (v & 31));
+  }
+  __syncwarp();
+}
+
+__device__ __forceinline__ bool better_min_g(int g, int v, int bestG, int bestV)
+{
+  return v != -1 && (g < bestG || (g == bestG && (bestV == -1 || v < bestV)));
+}
+
+__device__ __forceinline__ bool better_min_g_p(int g, int p, int v, int bestG, int bestP, int bestV)
+{
+  return v != -1 && (g < bestG || (g == bestG && p < bestP) || (g == bestG && p == bestP && (bestV == -1 || v < bestV)));
+}
+
+__device__ void reduce_min_g(int& bestG, int& bestV)
+{
+  for (int offset = 16; offset > 0; offset >>= 1)
+  {
+    const int otherG = __shfl_down_sync(0xFFFFFFFFu, bestG, offset);
+    const int otherV = __shfl_down_sync(0xFFFFFFFFu, bestV, offset);
+    if (better_min_g(otherG, otherV, bestG, bestV))
+    {
+      bestG = otherG;
+      bestV = otherV;
+    }
+  }
+
+  bestG = __shfl_sync(0xFFFFFFFFu, bestG, 0);
+  bestV = __shfl_sync(0xFFFFFFFFu, bestV, 0);
+}
+
+__device__ void reduce_min_g_p(int& bestG, int& bestP, int& bestV)
+{
+  for (int offset = 16; offset > 0; offset >>= 1)
+  {
+    const int otherG = __shfl_down_sync(0xFFFFFFFFu, bestG, offset);
+    const int otherP = __shfl_down_sync(0xFFFFFFFFu, bestP, offset);
+    const int otherV = __shfl_down_sync(0xFFFFFFFFu, bestV, offset);
+    if (better_min_g_p(otherG, otherP, otherV, bestG, bestP, bestV))
+    {
+      bestG = otherG;
+      bestP = otherP;
+      bestV = otherV;
+    }
+  }
+
+  bestG = __shfl_sync(0xFFFFFFFFu, bestG, 0);
+  bestP = __shfl_sync(0xFFFFFFFFu, bestP, 0);
+  bestV = __shfl_sync(0xFFFFFFFFu, bestV, 0);
+}
+
+__device__ void select_min_g_from_mask(int lane_id, unsigned int n, const uint32_t* mask, uint16_t* neiInG, int& bestG, int& bestV)
+{
+  bestG = INT_MAX;
+  bestV = -1;
+  const int words = (n + 31) >> 5;
+
+  for (int w = lane_id; w < words; w += 32)
+  {
+    uint32_t bits = mask[w];
+    while (bits)
+    {
+      const int bit = __ffs(bits) - 1;
+      const int v = (w << 5) + bit;
+      if (v < n && better_min_g(neiInG[v], v, bestG, bestV))
+      {
+        bestG = neiInG[v];
+        bestV = v;
+      }
+      bits &= bits - 1;
+    }
+  }
+  reduce_min_g(bestG, bestV);
+}
+
+__device__ void select_min_g_p_from_mask(int lane_id, unsigned int n, const uint32_t* mask, uint16_t* neiInG, uint16_t* neiInP, int& bestG, int& bestP, int& bestV)
+{
+  bestG = INT_MAX;
+  bestP = INT_MAX;
+  bestV = -1;
+  const int words = (n + 31) >> 5;
+
+  for (int w = lane_id; w < words; w += 32)
+  {
+    uint32_t bits = mask[w];
+    while (bits)
+    {
+      const int bit = __ffs(bits) - 1;
+      const int v = (w << 5) + bit;
+      if (v < n && better_min_g_p(neiInG[v], neiInP[v], v, bestG, bestP, bestV))
+      {
+        bestG = neiInG[v];
+        bestP = neiInP[v];
+        bestV = v;
+      }
+      bits &= bits - 1;
+    }
+  }
+
+  reduce_min_g_p(bestG, bestP, bestV);
+}
+
+__device__ void select_min_non_neighbor_g_p_from_cmask(int lane_id, unsigned int n, const uint32_t* Cmask, int pivot_plex, uint32_t* adjList, uint16_t* neiInG, uint16_t* neiInP, int& bestG, int& bestP, int& bestV)
+{
+  bestG = INT_MAX;
+  bestP = INT_MAX;
+  bestV = -1;
+  const int words = (n + 31) >> 5;
+
+  for (int w = lane_id; w < words; w += 32)
+  {
+    uint32_t bits = Cmask[w];
+    while(bits)
+    {
+      const int bit = __ffs(bits) - 1;
+      const int v = (w << 5) + bit;
+      if (v < n && !local_adjacent(adjList, n, v, pivot_plex) && better_min_g_p(neiInG[v], neiInP[v], v, bestG, bestP, bestV))
+      {
+        bestG = neiInG[v];
+        bestP = neiInP[v];
+        bestV = v;
+      }
+      bits &= bits - 1;
+    }
+  }
+
+  reduce_min_g_p(bestG, bestP, bestV);
+}
+
+__device__ bool has_kplex_pc_extension_from_mask(int lane_id, unsigned int n, const uint32_t* mask, int k, unsigned int totalSz, unsigned int PlexSz, unsigned int CandSz, uint16_t* missing, unsigned int* plex, unsigned int* cand, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase, uint32_t* adjList)
+{
+  bool found = false;
+  const int words = (n + 31) >> 5;
+
+  for (int w = lane_id; w < words; w += 32)
+  {
+    uint32_t bits = mask[w];
+    while(bits)
+    {
+      const int bit = __ffs(bits) - 1;
+      const int v = (w << 5) + bit;
+      if (v < n && isKplexPC2(v, k, totalSz, PlexSz, CandSz, missing, plex, cand, n, neighborsBase, offsetsBase, degreeBase, adjList))
+      {
+        found = true;
+      }
+      bits &= bits - 1;
+    }
+  }
+  return __any_sync(0xFFFFFFFFu, found);
+}
+
+__device__ int normalize_candidate_pivot_masked(int lane_id, int pivot, const uint32_t* Cmask, unsigned int* cand, unsigned int CandSz)
+{
+  int normalized = pivot;
+  if (lane_id == 0)
+  {
+    if (!mask_has_vertex(Cmask, pivot))
+    {
+      normalized = cand[CandSz - 1];
+    }
+  }
+  return __shfl_sync(0xFFFFFFFFu, normalized, 0);
+}
+
 // BNB with DFS Task strategy
 __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsigned int* d_left, unsigned int* d_blk_counter, unsigned int* d_left_counter, uint8_t* commonMtx, Task* tasks, Task* outTasks, Task* global_tasks, unsigned int N, unsigned int head, unsigned int* tailPtr, unsigned int* global_tail, uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, unsigned int* plex_count, uint16_t* d_bnb_neiInG, uint16_t* d_bnb_neiInP, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* abort, unsigned int* global_count)
 { 
   unsigned int global_index = blockIdx.x * blockDim.x + threadIdx.x;
   unsigned int warp_id = (global_index / 32);
   unsigned int lane_id = threadIdx.x % 32;
+  unsigned int local_warp_id = threadIdx.x >> 5;
 
   unsigned int task_pos = head + warp_id + WARPS * i;
   if (task_pos >= N) return;
@@ -2649,6 +2851,13 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
   uint32_t* local_uni = d_uni + warp_id * 32;
 
   uint32_t* adjList = d_adj + t.idx * ADJSIZE;
+
+  __shared__ uint32_t sh_Pmask[WARPS_EACH_BLK * PCX_MASK_WORDS];
+  __shared__ uint32_t sh_Cmask[WARPS_EACH_BLK * PCX_MASK_WORDS];
+  __shared__ uint32_t sh_Xmask[WARPS_EACH_BLK * PCX_MASK_WORDS];
+  uint32_t* Pmask = sh_Pmask + local_warp_id * PCX_MASK_WORDS;
+  uint32_t* Cmask = sh_Cmask + local_warp_id * PCX_MASK_WORDS;
+  uint32_t* Xmask = sh_Xmask + local_warp_id * PCX_MASK_WORDS;
 
   unsigned int n;
   if (lane_id == 0) n = local_n[0];
@@ -2696,6 +2905,7 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
       // continue;
     }
     __syncwarp();
+    build_pcx_masks(lane_id, plex, PlexSz, cand, CandSz, excl, ExclSz, Pmask, Cmask, Xmask);
 
     // if (depth >= local_bnb_steps)
     // {
@@ -2709,31 +2919,33 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
     int pivot = -1;
     int minnei_Cand = INT_MAX;
 
-    for (int i = lane_id; i < PlexSz; i+=32)
-    {
-      const int v = plex[i];
-      if (neiInG[v] < minnei_Plex)
-      {
-        minnei_Plex = neiInG[v];
-        pivot = v;
-      }
-    }
+    // for (int i = lane_id; i < PlexSz; i+=32)
+    // {
+    //   const int v = plex[i];
+    //   if (neiInG[v] < minnei_Plex)
+    //   {
+    //     minnei_Plex = neiInG[v];
+    //     pivot = v;
+    //   }
+    // }
 
       
 
-    for (int offset = 16; offset > 0; offset >>= 1)
-    {
-      int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei_Plex, offset);
-      int otherIdx = __shfl_down_sync(0xFFFFFFFF, pivot, offset);
-      if (otherMin < minnei_Plex || (otherMin == minnei_Plex && otherIdx < pivot))
-      {
-        minnei_Plex = otherMin;
-        pivot = otherIdx;
-      }
-    }
+    // for (int offset = 16; offset > 0; offset >>= 1)
+    // {
+    //   int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei_Plex, offset);
+    //   int otherIdx = __shfl_down_sync(0xFFFFFFFF, pivot, offset);
+    //   if (otherMin < minnei_Plex || (otherMin == minnei_Plex && otherIdx < pivot))
+    //   {
+    //     minnei_Plex = otherMin;
+    //     pivot = otherIdx;
+    //   }
+    // }
 
-    minnei_Plex = __shfl_sync(0xFFFFFFFF, minnei_Plex, 0);
-    pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
+    // minnei_Plex = __shfl_sync(0xFFFFFFFF, minnei_Plex, 0);
+    // pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
+
+    select_min_g_from_mask(lane_id, n, Pmask, neiInG, minnei_Plex, pivot);
 
     int pivot_plex = pivot;
       
@@ -2747,38 +2959,41 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
     if (minnei_Plex + k < PlexSz + CandSz)
     {     
       minnei_Cand = INT_MAX;
+      int minnei_CandP = INT_MAX;
       pivot = -1;
-      for (int i = lane_id; i < CandSz; i+=32)
-      {
-        const int v = cand[i];
-        int check = v * n + pivot_plex;
-        if (!((adjList[check >> 5] >> (check & 31)) & 1u))
-        {
-          if (neiInG[v] < minnei_Cand)
-          {
-            minnei_Cand = neiInG[v];
-            pivot = v;
-          }
-          else if (neiInG[v] == minnei_Cand && neiInP[pivot] > neiInP[v])
-          {
-            pivot = v;
-          }
-        }
-      }
+      // for (int i = lane_id; i < CandSz; i+=32)
+      // {
+      //   const int v = cand[i];
+      //   int check = v * n + pivot_plex;
+      //   if (!((adjList[check >> 5] >> (check & 31)) & 1u))
+      //   {
+      //     if (neiInG[v] < minnei_Cand)
+      //     {
+      //       minnei_Cand = neiInG[v];
+      //       pivot = v;
+      //     }
+      //     else if (neiInG[v] == minnei_Cand && neiInP[pivot] > neiInP[v])
+      //     {
+      //       pivot = v;
+      //     }
+      //   }
+      // }
           
-      for (int offset = 16; offset > 0; offset >>= 1)
-      {
-        int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei_Cand, offset);
-        int otherIdx = __shfl_down_sync(0xFFFFFFFF, pivot, offset);
-        if (otherMin < minnei_Cand || (otherMin == minnei_Cand && otherIdx != -1 && neiInP[pivot] > neiInP[otherIdx]))
-        {
-          minnei_Cand = otherMin;
-          pivot = otherIdx;
-        }
-      }
+      // for (int offset = 16; offset > 0; offset >>= 1)
+      // {
+      //   int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei_Cand, offset);
+      //   int otherIdx = __shfl_down_sync(0xFFFFFFFF, pivot, offset);
+      //   if (otherMin < minnei_Cand || (otherMin == minnei_Cand && otherIdx != -1 && neiInP[pivot] > neiInP[otherIdx]))
+      //   {
+      //     minnei_Cand = otherMin;
+      //     pivot = otherIdx;
+      //   }
+      // }
 
-      minnei_Cand = __shfl_sync(0xFFFFFFFF, minnei_Cand, 0);
-      pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
+      // minnei_Cand = __shfl_sync(0xFFFFFFFF, minnei_Cand, 0);
+      // pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
+
+      select_min_non_neighbor_g_p_from_cmask(lane_id, n, Cmask, pivot_plex, adjList, neiInG, neiInP, minnei_Cand, minnei_CandP, pivot);
 
       if (pivot == -1)
       {
@@ -2805,34 +3020,44 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
     }
     
     int minnei = minnei_Plex;
+    int candMinG = INT_MAX;
+    int candMinP = INT_MAX;
+    int candPivot = -1;
 
-    for (int i = lane_id; i < CandSz; i+=32)
+    select_min_g_p_from_mask(lane_id, n, Cmask, neiInG, neiInP, candMinG, candMinP, candPivot);
+    if (better_min_g_p(candMinG, candMinP, candPivot, minnei, (pivot == -1 ? INT_MAX : neiInP[pivot]), pivot))
     {
-      const int v = cand[i];
-      if (neiInG[v] < minnei)
-      {
-        minnei = neiInG[v];
-        pivot = v;
-      }
-      else if (neiInG[v] == minnei && neiInP[pivot] > neiInP[v])
-      {
-        pivot = v;
-      }
+      minnei = candMinG;
+      pivot = candPivot;
     }
 
-    for(int offset = 16; offset > 0; offset >>= 1)
-    {
-      int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei, offset);
-      int otherIdx = __shfl_down_sync(0xFFFFFFFF, pivot, offset);
+    // for (int i = lane_id; i < CandSz; i+=32)
+    // {
+    //   const int v = cand[i];
+    //   if (neiInG[v] < minnei)
+    //   {
+    //     minnei = neiInG[v];
+    //     pivot = v;
+    //   }
+    //   else if (neiInG[v] == minnei && neiInP[pivot] > neiInP[v])
+    //   {
+    //     pivot = v;
+    //   }
+    // }
 
-      if (otherMin < minnei || (otherMin == minnei && otherIdx != -1 && neiInP[pivot] > neiInP[otherIdx]))
-      {
-        minnei = otherMin;
-        pivot = otherIdx;
-      }
-    }
-    minnei = __shfl_sync(0xFFFFFFFF, minnei, 0);
-    pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
+    // for(int offset = 16; offset > 0; offset >>= 1)
+    // {
+    //   int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei, offset);
+    //   int otherIdx = __shfl_down_sync(0xFFFFFFFF, pivot, offset);
+
+    //   if (otherMin < minnei || (otherMin == minnei && otherIdx != -1 && neiInP[pivot] > neiInP[otherIdx]))
+    //   {
+    //     minnei = otherMin;
+    //     pivot = otherIdx;
+    //   }
+    // }
+    // minnei = __shfl_sync(0xFFFFFFFF, minnei, 0);
+    // pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
     if (minnei >= (PlexSz + CandSz - k))
     {
       if (PlexSz + CandSz < q) return;
