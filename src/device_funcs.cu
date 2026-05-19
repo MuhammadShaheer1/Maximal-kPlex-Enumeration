@@ -2116,10 +2116,14 @@ __global__ void seedInitialTinyTasks(Task* parent_tasks, TinyTask* tiny_tasks, u
 //   __syncwarp();
 // }
 
-__device__ bool reserve_task_slot(int lane_id, Task* tasks, Task* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, int* abort, Task*& localTasks, uint8_t*& labels, uint16_t*& all_neiInG, uint16_t*& all_neiInP, unsigned int& pos)
+__device__ bool reserve_task_slot(int lane_id, Task* tasks, Task* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, uint32_t* d_all_Pmask, uint32_t* d_all_Cmask, uint32_t* d_all_Xmask, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint32_t* global_Pmask, uint32_t* global_Cmask, uint32_t* global_Xmask, uint16_t* global_neiInG, uint16_t* global_neiInP, int* abort, Task*& localTasks, uint32_t*& all_Pmask, uint32_t*& all_Cmask, uint32_t*& all_Xmask, uint16_t*& all_neiInG, uint16_t*& all_neiInP, unsigned int& pos)
 {
   localTasks = tasks;
-  labels = d_all_labels;
+  // labels = d_all_labels;
+  all_Pmask = d_all_Pmask;
+  all_Cmask = d_all_Cmask;
+  all_Xmask = d_all_Xmask;
+
   all_neiInG = d_all_neiInG;
   all_neiInP = d_all_neiInP;
 
@@ -2141,7 +2145,11 @@ __device__ bool reserve_task_slot(int lane_id, Task* tasks, Task* global_tasks, 
       return false;
     }
     localTasks = global_tasks;
-    labels = global_labels;
+    // labels = global_labels;
+    all_Pmask = global_Pmask;
+    all_Cmask = global_Cmask;
+    all_Xmask = global_Xmask;
+
     all_neiInG = global_neiInG;
     all_neiInP = global_neiInP;
   }
@@ -2359,58 +2367,6 @@ __device__ bool pop_local_dfs_snapshot(int warp_id, int lane_id, unsigned int& s
   return true;
 }
 
-
-__device__ bool enqueue_exclude_task_from_arrays(int lane_id, int task_idx, unsigned int n, unsigned int pivot, unsigned int* plex, unsigned int PlexSz, unsigned int* cand, unsigned int CandSz, unsigned int* excl, unsigned int ExclSz, uint16_t* neiInG, uint16_t* neiInP, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase, Task* tasks, Task* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, int* abort, unsigned int* global_count)
-{
-  Task* localTasks = tasks;
-  uint8_t* labels = d_all_labels;
-  uint16_t* all_neiInG = d_all_neiInG;
-  uint16_t* all_neiInP = d_all_neiInP;
-  unsigned int pos = 0;
-
-  if (CandSz == 0) return false;
-  if (!reserve_task_slot(lane_id, tasks, global_tasks, tailPtr, global_tail, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, abort, localTasks, labels, all_neiInG, all_neiInP, pos)) return false;
-
-
-  uint8_t* childLabels = labels + (size_t)pos * MAX_BLK_SIZE;
-  uint16_t* childNeiInG = all_neiInG + (size_t)pos * MAX_BLK_SIZE;
-  uint16_t* childNeiInP = all_neiInP + (size_t)pos * MAX_BLK_SIZE;
-
-  for (unsigned int j = lane_id; j < n; j += 32)
-  {
-    childLabels[j] = U;
-    childNeiInG[j] = neiInG[j];
-    childNeiInP[j] = neiInP[j];
-  }
-  __syncwarp();
-
-  for (unsigned int j = lane_id; j < PlexSz; j += 32) childLabels[plex[j]] = P;
-  for (unsigned int j = lane_id; j < CandSz; j += 32) childLabels[cand[j]] = C;
-  for (unsigned int j = lane_id; j < ExclSz; j += 32) childLabels[excl[j]] = X;
-  __syncwarp();
-
-  if (lane_id == 0) childLabels[pivot] = X;
-  __syncwarp();
-
-  subG(lane_id, pivot, childNeiInG, n, neighborsBase, offsetsBase, degreeBase);
-  __syncwarp();
-
-  if (lane_id == 0)
-  {
-    Task &nt = localTasks[pos];
-    nt.idx = task_idx;
-    nt.PlexSz = PlexSz;
-    nt.CandSz = CandSz - 1;
-    nt.ExclSz = ExclSz + 1;
-    nt.labels = childLabels;
-    nt.neiInG = childNeiInG;
-    nt.neiInP = childNeiInP;
-    atomicAdd(&global_count[0], 1);
-  }
-
-  return true;
-}
-
 __device__ bool remove_unsorted_value(unsigned int* data, unsigned int& sz, unsigned int value)
 {
   for (unsigned int i = 0; i < sz; i++)
@@ -2425,13 +2381,113 @@ __device__ bool remove_unsorted_value(unsigned int* data, unsigned int& sz, unsi
   return false;
 }
 
-__device__ bool apply_include_branch_unsorted(int lane_id, int k, int lb, unsigned int n, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase, uint8_t* commonMtx, unsigned int* plex, unsigned int& PlexSz, unsigned int* cand, unsigned int& CandSz, unsigned int* excl, unsigned int& ExclSz, uint16_t* neiInP, uint16_t* neiInG, int minIndex, uint32_t* adjList)
+__device__ __forceinline__ void mask_set_vertex(uint32_t* mask, unsigned int v)
+{
+  mask[v >> 5] |= (1u << (v & 31));
+}
+
+__device__ __forceinline__ void mask_clear_vertex(uint32_t* mask, unsigned int v)
+{
+  mask[v >> 5] &= ~(1u << (v & 31));
+}
+
+__device__ __forceinline__ void move_mask_c_to_p(uint32_t* Pmask, uint32_t* Cmask, unsigned int v)
+{
+  mask_clear_vertex(Cmask, v);
+  mask_set_vertex(Pmask, v);
+}
+
+__device__ void copy_pcx_masks(int lane_id, const uint32_t* srcPmask, const uint32_t* srcCmask, const uint32_t* srcXmask, uint32_t* dstPmask, uint32_t* dstCmask, uint32_t* dstXmask)
+{
+  for (int w = lane_id; w < PCX_MASK_WORDS; w += 32)
+  {
+    dstPmask[w] = srcPmask[w];
+    dstCmask[w] = srcCmask[w];
+    dstXmask[w] = srcXmask[w];
+  }
+  __syncwarp();
+}
+
+__device__ bool enqueue_exclude_task_from_arrays(int lane_id, int task_idx, unsigned int n, unsigned int pivot, unsigned int* plex, unsigned int PlexSz, unsigned int* cand, unsigned int CandSz, unsigned int* excl, unsigned int ExclSz, uint16_t* neiInG, uint16_t* neiInP, uint32_t* Pmask, uint32_t* Cmask, uint32_t* Xmask, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase, Task* tasks, Task* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, uint32_t* d_all_Pmask, uint32_t* d_all_Cmask, uint32_t* d_all_Xmask, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint32_t* global_Pmask, uint32_t* global_Cmask, uint32_t* global_Xmask, uint16_t* global_neiInG, uint16_t* global_neiInP, int* abort, unsigned int* global_count)
+{
+  Task* localTasks = tasks;
+  // uint8_t* labels = d_all_labels;
+  uint32_t* all_Pmask = d_all_Pmask;
+  uint32_t* all_Cmask = d_all_Cmask;
+  uint32_t* all_Xmask = d_all_Xmask;
+
+  uint16_t* all_neiInG = d_all_neiInG;
+  uint16_t* all_neiInP = d_all_neiInP;
+  unsigned int pos = 0;
+
+  if (CandSz == 0) return false;
+  if (!reserve_task_slot(lane_id, tasks, global_tasks, tailPtr, global_tail, d_all_Pmask, d_all_Cmask, d_all_Xmask, d_all_neiInG, d_all_neiInP, global_Pmask, global_Cmask, global_Xmask, global_neiInG, global_neiInP, abort, localTasks, all_Pmask, all_Cmask, all_Xmask, all_neiInG, all_neiInP, pos)) return false;
+
+
+  // uint8_t* childLabels = labels + (size_t)pos * MAX_BLK_SIZE;
+  uint32_t* childPmask = all_Pmask + (size_t)pos * PCX_MASK_WORDS;
+  uint32_t* childCmask = all_Cmask + (size_t)pos * PCX_MASK_WORDS;
+  uint32_t* childXmask = all_Xmask + (size_t)pos * PCX_MASK_WORDS;
+
+  uint16_t* childNeiInG = all_neiInG + (size_t)pos * MAX_BLK_SIZE;
+  uint16_t* childNeiInP = all_neiInP + (size_t)pos * MAX_BLK_SIZE;
+
+  copy_pcx_masks(lane_id, Pmask, Cmask, Xmask, childPmask, childCmask, childXmask);
+  
+  if (lane_id == 0)
+  {
+    mask_clear_vertex(childCmask, pivot);
+    mask_set_vertex(childXmask, pivot);
+  }
+  __syncwarp();
+
+  for (unsigned int j = lane_id; j < n; j += 32)
+  {
+    // childLabels[j] = U;
+    childNeiInG[j] = neiInG[j];
+    childNeiInP[j] = neiInP[j];
+  }
+  __syncwarp();
+
+  // for (unsigned int j = lane_id; j < PlexSz; j += 32) childLabels[plex[j]] = P;
+  // for (unsigned int j = lane_id; j < CandSz; j += 32) childLabels[cand[j]] = C;
+  // for (unsigned int j = lane_id; j < ExclSz; j += 32) childLabels[excl[j]] = X;
+  // __syncwarp();
+
+  // if (lane_id == 0) childLabels[pivot] = X;
+  // __syncwarp();
+
+  subG(lane_id, pivot, childNeiInG, n, neighborsBase, offsetsBase, degreeBase);
+  __syncwarp();
+
+  if (lane_id == 0)
+  {
+    Task &nt = localTasks[pos];
+    nt.idx = task_idx;
+    nt.PlexSz = PlexSz;
+    nt.CandSz = CandSz - 1;
+    nt.ExclSz = ExclSz + 1;
+    // nt.labels = childLabels;
+    nt.Pmask = childPmask;
+    nt.Cmask = childCmask;
+    nt.Xmask = childXmask;
+
+    nt.neiInG = childNeiInG;
+    nt.neiInP = childNeiInP;
+    atomicAdd(&global_count[0], 1);
+  }
+
+  return true;
+}
+
+__device__ bool apply_include_branch_unsorted(int lane_id, int k, int lb, unsigned int n, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase, uint8_t* commonMtx, unsigned int* plex, unsigned int& PlexSz, unsigned int* cand, unsigned int& CandSz, unsigned int* excl, unsigned int& ExclSz, uint32_t* Pmask, uint32_t* Cmask, uint32_t* Xmask, uint16_t* neiInP, uint16_t* neiInG, int minIndex, uint32_t* adjList)
 {
   int moved = 1;
   if (lane_id == 0)
   {
     plex[PlexSz++] = minIndex;
     moved = remove_unsorted_value(cand, CandSz, minIndex) ? 1 : 0;
+    if (moved) move_mask_c_to_p(Pmask, Cmask, minIndex);
   }
 
   moved = __shfl_sync(0xFFFFFFFFu, moved, 0);
@@ -2477,6 +2533,7 @@ __device__ bool apply_include_branch_unsorted(int lane_id, int k, int lb, unsign
     {
       const int leader = __ffs(dropmask) - 1;
       const unsigned vdrop = __shfl_sync(0xFFFFFFFFu, v, leader);
+      if (lane_id == 0) mask_clear_vertex(Cmask, vdrop);
       subG(lane_id, vdrop, neiInG, n, neighborsBase, offsetsBase, degreeBase);
       dropmask &= (dropmask - 1);
     }
@@ -2512,11 +2569,21 @@ __device__ bool apply_include_branch_unsorted(int lane_id, int k, int lb, unsign
 
     const bool keep = active && !(row[v] < UNLINK2MORE) && isKplex3(v, k, PlexSz, neiInP, plex, n, neighborsBase, offsetsBase, degreeBase, adjList);
 
+    const unsigned activemask = __ballot_sync(0xFFFFFFFFu, active);
     const unsigned keepmask = __ballot_sync(0xFFFFFFFFu, keep);
+    unsigned dropmask = activemask ^ keepmask;
     const int keep_rank = __popc(keepmask & ((1u << lane_id) - 1));
     const int num_keep = __popc(keepmask);
 
     if (active && keep) excl[write + keep_rank] = v;
+
+    while(dropmask)
+    {
+      const int leader = __ffs(dropmask) - 1;
+      const unsigned vdrop = __shfl_sync(0xFFFFFFFFu, v, leader);
+      if (lane_id == 0) mask_clear_vertex(Xmask, vdrop);
+      dropmask &= (dropmask - 1);
+    }
 
     if (lane_id == 0)
     {
@@ -2534,32 +2601,42 @@ __device__ bool apply_include_branch_unsorted(int lane_id, int k, int lb, unsign
   return true;
 }
 
-__device__ bool enqueue_task_from_arrays(int lane_id, int task_idx, unsigned int n, unsigned int* plex, unsigned int PlexSz, unsigned int* cand, unsigned int CandSz, unsigned int* excl, unsigned int ExclSz, uint16_t* neiInG, uint16_t* neiInP, Task* tasks, Task* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, int* abort, unsigned int* global_count)
+__device__ bool enqueue_task_from_arrays(int lane_id, int task_idx, unsigned int n, unsigned int* plex, unsigned int PlexSz, unsigned int* cand, unsigned int CandSz, unsigned int* excl, unsigned int ExclSz, uint16_t* neiInG, uint16_t* neiInP, uint32_t* Pmask, uint32_t* Cmask, uint32_t* Xmask, Task* tasks, Task* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, uint32_t* d_all_Pmask, uint32_t* d_all_Cmask, uint32_t* d_all_Xmask, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint32_t* global_Pmask, uint32_t* global_Cmask, uint32_t* global_Xmask, uint16_t* global_neiInG, uint16_t* global_neiInP, int* abort, unsigned int* global_count)
 {
   Task* localTasks = tasks;
-  uint8_t* labels = d_all_labels;
+  // uint8_t* labels = d_all_labels;
+  uint32_t* all_Pmask = d_all_Pmask;
+  uint32_t* all_Cmask = d_all_Cmask;
+  uint32_t* all_Xmask = d_all_Xmask;
+
   uint16_t* all_neiInG = d_all_neiInG;
   uint16_t* all_neiInP = d_all_neiInP;
   unsigned int pos = 0;
 
-  if (!reserve_task_slot(lane_id, tasks, global_tasks, tailPtr, global_tail, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, abort, localTasks, labels, all_neiInG, all_neiInP, pos)) return false;
+  if (!reserve_task_slot(lane_id, tasks, global_tasks, tailPtr, global_tail, d_all_Pmask, d_all_Cmask, d_all_Xmask, d_all_neiInG, d_all_neiInP, global_Pmask, global_Cmask, global_Xmask, global_neiInG, global_neiInP, abort, localTasks, all_Pmask, all_Cmask, all_Xmask, all_neiInG, all_neiInP, pos)) return false;
 
-  uint8_t* childLabels = labels + (size_t)pos * MAX_BLK_SIZE;
+  // uint8_t* childLabels = labels + (size_t)pos * MAX_BLK_SIZE;
+  uint32_t* childPmask = all_Pmask + (size_t)pos * PCX_MASK_WORDS;
+  uint32_t* childCmask = all_Cmask + (size_t)pos * PCX_MASK_WORDS;
+  uint32_t* childXmask = all_Xmask + (size_t)pos * PCX_MASK_WORDS;
+
   uint16_t* childNeiInG = all_neiInG + (size_t)pos * MAX_BLK_SIZE;
   uint16_t* childNeiInP = all_neiInP + (size_t)pos * MAX_BLK_SIZE;
 
+  copy_pcx_masks(lane_id, Pmask, Cmask, Xmask, childPmask, childCmask, childXmask);
+
   for (unsigned int j = lane_id; j < n; j += 32)
   {
-    childLabels[j] = U;
+    // childLabels[j] = U;
     childNeiInG[j] = neiInG[j];
     childNeiInP[j] = neiInP[j];
   }
   __syncwarp();
 
-  for (unsigned int j = lane_id; j < PlexSz; j += 32) childLabels[plex[j]] = P;
-  for (unsigned int j = lane_id; j < CandSz; j += 32) childLabels[cand[j]] = C;
-  for (unsigned int j = lane_id; j < ExclSz; j += 32) childLabels[excl[j]] = X;
-  __syncwarp();
+  // for (unsigned int j = lane_id; j < PlexSz; j += 32) childLabels[plex[j]] = P;
+  // for (unsigned int j = lane_id; j < CandSz; j += 32) childLabels[cand[j]] = C;
+  // for (unsigned int j = lane_id; j < ExclSz; j += 32) childLabels[excl[j]] = X;
+  // __syncwarp();
 
   if (lane_id == 0)
   {
@@ -2568,7 +2645,11 @@ __device__ bool enqueue_task_from_arrays(int lane_id, int task_idx, unsigned int
     nt.PlexSz = PlexSz;
     nt.CandSz = CandSz;
     nt.ExclSz = ExclSz;
-    nt.labels = childLabels;
+    // nt.labels = childLabels;
+    nt.Pmask = childPmask;
+    nt.Cmask = childCmask;
+    nt.Xmask = childXmask;
+
     nt.neiInG = childNeiInG;
     nt.neiInP = childNeiInP;
     atomicAdd(&global_count[0], 1);
@@ -2577,12 +2658,16 @@ __device__ bool enqueue_task_from_arrays(int lane_id, int task_idx, unsigned int
   return true;
 }
 
-__global__ void rebaseTaskQueuePointers(Task* tasks, uint8_t* labels, uint16_t* neiInG, uint16_t* neiInP, unsigned int N)
+__global__ void rebaseTaskQueuePointers(Task* tasks, uint32_t* Pmask, uint32_t* Cmask, uint32_t* Xmask, uint16_t* neiInG, uint16_t* neiInP, unsigned int N)
 {
   unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
   if (tid >= N) return;
 
-  tasks[tid].labels = labels + (size_t)tid * MAX_BLK_SIZE;
+  // tasks[tid].labels = labels + (size_t)tid * MAX_BLK_SIZE;
+  tasks[tid].Pmask = Pmask + (size_t)tid * PCX_MASK_WORDS;
+  tasks[tid].Cmask = Cmask + (size_t)tid * PCX_MASK_WORDS;
+  tasks[tid].Xmask = Xmask + (size_t)tid * PCX_MASK_WORDS;
+
   tasks[tid].neiInG = neiInG + (size_t)tid * MAX_BLK_SIZE;
   tasks[tid].neiInP = neiInP + (size_t)tid * MAX_BLK_SIZE;
 }
@@ -2613,13 +2698,117 @@ __device__ __forceinline__ bool mask_has_vertex(const uint32_t* mask, int v)
   return v >= 0 && ((mask[v >> 5] >> (v & 31)) & 1u);
 }
 
+// __device__ void initializePCXWithMasks(int lane_id,
+//                                        const uint8_t* __restrict__ labelsBase,
+//                                        unsigned int n,
+//                                        unsigned int* __restrict__ plex,
+//                                        unsigned int* __restrict__ cand,
+//                                        unsigned int* __restrict__ excl,
+//                                        uint32_t* __restrict__ Pmask,
+//                                        uint32_t* __restrict__ Cmask,
+//                                        uint32_t* __restrict__ Xmask)
+
+// {
+//   const unsigned FULL = 0xFFFFFFFFu;
+
+//   for (int w = lane_id; w < PCX_MASK_WORDS; w += 32)
+//   {
+//     Pmask[w] = 0;
+//     Cmask[w] = 0;
+//     Xmask[w] = 0;
+//   }
+
+//   __syncwarp();
+
+//   int p_base = 0, c_base = 0, x_base = 0;
+
+//   for (int i0 = 0; i0 < n; i0 += 32)
+//   {
+//     const int i = i0 + lane_id;
+//     const uint8_t lbl = (i < n) ? labelsBase[i] : 0xFF;
+
+//     const unsigned p_mask = __ballot_sync(FULL, lbl == P);
+//     const unsigned c_mask = __ballot_sync(FULL, lbl == C);
+//     const unsigned x_mask = __ballot_sync(FULL, lbl == X);
+
+//     const int p_rank = __popc(p_mask & ((1u << lane_id) - 1));
+//     const int c_rank = __popc(c_mask & ((1u << lane_id) - 1));
+//     const int x_rank = __popc(x_mask & ((1u << lane_id) - 1));
+
+//     const int p_wbase = __shfl_sync(FULL, p_base, 0);
+//     const int c_wbase = __shfl_sync(FULL, c_base, 0);
+//     const int x_wbase = __shfl_sync(FULL, x_base, 0);
+
+//     if (lbl == P) plex[p_wbase + p_rank] = i;
+//     if (lbl == C) cand[c_wbase + c_rank] = i;
+//     if (lbl == X) excl[x_wbase + x_rank] = i;
+
+//     if (lane_id == 0)
+//     {
+//       const int word = i0 >> 5;
+//       Pmask[word] = p_mask;
+//       Cmask[word] = c_mask;
+//       Xmask[word] = x_mask;
+
+//       p_base += __popc(p_mask);
+//       c_base += __popc(c_mask);
+//       x_base += __popc(x_mask);
+//     }
+//   }
+//   __syncwarp();
+// }
+
+__device__ void initializePCXFromMasks(int lane_id, const uint32_t* __restrict__ Pmask, const uint32_t* __restrict__ Cmask, const uint32_t* __restrict__ Xmask, unsigned int n, unsigned int* __restrict__ plex, unsigned int* __restrict__ cand, unsigned int* __restrict__ excl)
+{
+  int p_base = 0;
+  int c_base = 0;
+  int x_base = 0;
+  const int words = (n + 31) >> 5;
+
+  for (int w = 0; w < words; w++)
+  {
+    uint32_t pword = 0;
+    uint32_t cword = 0;
+    uint32_t xword = 0;
+    if (lane_id == 0)
+    {
+      pword = Pmask[w];
+      cword = Cmask[w];
+      xword = Xmask[w];
+      const unsigned int rem = n & 31u;
+      if (w == words - 1 && rem != 0)
+      {
+        const uint32_t valid = (1u << rem) - 1u;
+        pword &= valid;
+        cword &= valid;
+        xword &= valid;
+      }
+    }
+    pword = __shfl_sync(0xFFFFFFFFu, pword, 0);
+    cword = __shfl_sync(0xFFFFFFFFu, cword, 0);
+    xword = __shfl_sync(0xFFFFFFFFu, xword, 0);
+
+    const uint32_t lane_bit = 1u << lane_id;
+    const uint32_t prior = lane_id == 0 ? 0u : ((1u << lane_id) - 1u);
+    const unsigned int v = (w << 5) + lane_id;
+
+    if (pword & lane_bit) plex[p_base + __popc(pword & prior)] = v;
+    if (cword & lane_bit) cand[c_base + __popc(cword & prior)] = v;
+    if (xword & lane_bit) excl[x_base + __popc(xword & prior)] = v;
+
+    p_base += __popc(pword);
+    c_base += __popc(cword);
+    x_base += __popc(xword);
+  }
+}
+
 __device__ __forceinline__ bool local_adjacent(uint32_t* adjList, unsigned int n, int u, int v)
 {
   const unsigned int bit = (unsigned int) u * n + (unsigned int)v;
   return ((adjList[bit >> 5] >> (bit & 31)) & 1u) != 0;
 }
 
-__device__ void build_pcx_masks(int lane_id, unsigned int* plex, unsigned int PlexSz, unsigned int* cand, unsigned int CandSz, unsigned int* excl, unsigned int ExclSz, uint32_t* Pmask, uint32_t* Cmask, uint32_t* Xmask)
+__device__ void write_task_masks_from_arrays(int lane_id, unsigned int* plex, unsigned int PlexSz, unsigned int* cand, unsigned int CandSz, unsigned int* excl, unsigned int ExclSz, uint32_t* Pmask, uint32_t* Cmask, uint32_t* Xmask)
 {
   for (int w = lane_id; w < PCX_MASK_WORDS; w += 32)
   {
@@ -2808,7 +2997,7 @@ __device__ int normalize_candidate_pivot_masked(int lane_id, int pivot, const ui
 }
 
 // BNB with DFS Task strategy
-__global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsigned int* d_left, unsigned int* d_blk_counter, unsigned int* d_left_counter, uint8_t* commonMtx, Task* tasks, Task* outTasks, Task* global_tasks, unsigned int N, unsigned int head, unsigned int* tailPtr, unsigned int* global_tail, uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, unsigned int* plex_count, uint16_t* d_bnb_neiInG, uint16_t* d_bnb_neiInP, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* abort, unsigned int* global_count)
+__global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsigned int* d_left, unsigned int* d_blk_counter, unsigned int* d_left_counter, uint8_t* commonMtx, Task* tasks, Task* outTasks, Task* global_tasks, unsigned int N, unsigned int head, unsigned int* tailPtr, unsigned int* global_tail, uint32_t* d_all_Pmask, uint32_t* d_all_Cmask, uint32_t* d_all_Xmask, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint32_t* global_Pmask, uint32_t* global_Cmask, uint32_t* global_Xmask, uint16_t* global_neiInG, uint16_t* global_neiInP, unsigned int* plex_count, uint16_t* d_bnb_neiInG, uint16_t* d_bnb_neiInP, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* abort, unsigned int* global_count)
 { 
   unsigned int global_index = blockIdx.x * blockDim.x + threadIdx.x;
   unsigned int warp_id = (global_index / 32);
@@ -2821,7 +3010,7 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
   int k = p.k;
   int q = p.lb;
   Task t = tasks[task_pos];
-  uint8_t* labelsBase = t.labels;
+  // uint8_t* labelsBase = t.labels;
 
   unsigned int* leftBase = d_left + t.idx * MAX_BLK_SIZE;
   uint16_t* neiInG = d_bnb_neiInG + warp_id * MAX_BLK_SIZE;
@@ -2868,8 +3057,12 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
     neiInG[j] = t.neiInG[j];
     neiInP[j] = t.neiInP[j];
   }
+
+  copy_pcx_masks(lane_id, t.Pmask, t.Cmask, t.Xmask, Pmask, Cmask, Xmask);
+  initializePCXFromMasks(lane_id, Pmask, Cmask, Xmask, n, plex, cand, excl);
   
-  initializePCX(lane_id, labelsBase, n, plex, cand, excl);
+  // initializePCX(lane_id, labelsBase, n, plex, cand, excl);
+  // initializePCXWithMasks(lane_id, labelsBase, n, plex, cand, excl, Pmask, Cmask, Xmask);
   __syncwarp();
 
   // LocalDfsFrame* stack_frames = reinterpret_cast<LocalDfsFrame*>(outTasks) + (size_t)warp_id * LOCAL_DFS_FRAME_BYTES;
@@ -2905,7 +3098,7 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
       // continue;
     }
     __syncwarp();
-    build_pcx_masks(lane_id, plex, PlexSz, cand, CandSz, excl, ExclSz, Pmask, Cmask, Xmask);
+    // build_pcx_masks(lane_id, plex, PlexSz, cand, CandSz, excl, ExclSz, Pmask, Cmask, Xmask);
 
     // if (depth >= local_bnb_steps)
     // {
@@ -3007,10 +3200,10 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
       //   continue;
       // }
           
-      if (!enqueue_exclude_task_from_arrays(lane_id, t.idx, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, outTasks, global_tasks, tailPtr, global_tail, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
+      if (!enqueue_exclude_task_from_arrays(lane_id, t.idx, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, Pmask, Cmask, Xmask, neighborsBase, offsetsBase, degreeBase, outTasks, global_tasks, tailPtr, global_tail, d_all_Pmask, d_all_Cmask, d_all_Xmask, d_all_neiInG, d_all_neiInP, global_Pmask, global_Cmask, global_Xmask, global_neiInG, global_neiInP, abort, global_count)) return;
       // if (!push_exclude_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, depth + 1, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, abort)) return;
 
-      if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, pivot, adjList)) return;
+      if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, Pmask, Cmask, Xmask, neiInP, neiInG, pivot, adjList)) return;
       // if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, pivot, adjList))
       // {
       //   depth++;
@@ -3111,12 +3304,12 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
     // }
     // else if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
 
-    if (!enqueue_exclude_task_from_arrays(lane_id, t.idx, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, outTasks, global_tasks, tailPtr, global_tail, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
-    if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, pivot, adjList)) return;
+    if (!enqueue_exclude_task_from_arrays(lane_id, t.idx, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, Pmask, Cmask, Xmask, neighborsBase, offsetsBase, degreeBase, outTasks, global_tasks, tailPtr, global_tail, d_all_Pmask, d_all_Cmask, d_all_Xmask, d_all_neiInG, d_all_neiInP, global_Pmask, global_Cmask, global_Xmask, global_neiInG, global_neiInP, abort, global_count)) return;
+    if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, Pmask, Cmask, Xmask, neiInP, neiInG, pivot, adjList)) return;
   }
 
   if (PlexSz + CandSz < q) return;
-  if (!enqueue_task_from_arrays(lane_id, t.idx, n, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, outTasks, global_tasks, tailPtr, global_tail, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
+  if (!enqueue_task_from_arrays(lane_id, t.idx, n, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, Pmask, Cmask, Xmask, outTasks, global_tasks, tailPtr, global_tail, d_all_Pmask, d_all_Cmask, d_all_Xmask, d_all_neiInG, d_all_neiInP, global_Pmask, global_Cmask, global_Xmask, global_neiInG, global_neiInP, abort, global_count)) return;
   __syncwarp();
 }
 
@@ -5124,37 +5317,40 @@ __global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_poi
           pos = __shfl_sync(0xFFFFFFFF, pos, 0);
           // if (lane_id == 0) printf("pos: %d, max_cap: %d\n", pos, MAX_CAP/4);
           
-
-          uint8_t* newLabels = t.d_all_labels_A + pos * MAX_BLK_SIZE;
+          uint32_t* newPmask = t.d_all_Pmask_A + (size_t)pos * PCX_MASK_WORDS;
+          uint32_t* newCmask = t.d_all_Cmask_A + (size_t)pos * PCX_MASK_WORDS;
+          uint32_t* newXmask = t.d_all_Xmask_A + (size_t)pos * PCX_MASK_WORDS;
+          // uint8_t* newLabels = t.d_all_labels_A + pos * MAX_BLK_SIZE;
           uint16_t* newNeiInG = t.d_all_neiInG_A + pos * MAX_BLK_SIZE;
           uint16_t* newNeiInP = t.d_all_neiInP_A + pos * MAX_BLK_SIZE;
           for (int i = lane_id; i < n; i+=32)
           {
-            newLabels[i] = U;
+            // newLabels[i] = U;
             newNeiInG[i] = neiInGBase[i];
             newNeiInP[i] = neiInPBase[i];
           }
-          for (int i = lane_id; i < PlexSz[0]; i+=32)
-          {
-            const int v = plex[i];
-            newLabels[v] = P;
-          }
-          for (int i = lane_id; i < Cand1Sz[0]; i+=32)
-          {
-            const int v = cand1[i];
-            newLabels[v] = C;
-          }
-          for (int i = lane_id; i < Cand2Sz[0]; i+=32)
-          {
-            const int v = cand2[i];
-            newLabels[v] = H;
-          }
-          for (int i = lane_id; i < ExclSz[0]; i+=32)
-          {
-            const int v = excl[i];
-            newLabels[v] = X;
-          }
+          // for (int i = lane_id; i < PlexSz[0]; i+=32)
+          // {
+          //   const int v = plex[i];
+          //   newLabels[v] = P;
+          // }
+          // for (int i = lane_id; i < Cand1Sz[0]; i+=32)
+          // {
+          //   const int v = cand1[i];
+          //   newLabels[v] = C;
+          // }
+          // for (int i = lane_id; i < Cand2Sz[0]; i+=32)
+          // {
+          //   const int v = cand2[i];
+          //   newLabels[v] = H;
+          // }
+          // for (int i = lane_id; i < ExclSz[0]; i+=32)
+          // {
+          //   const int v = excl[i];
+          //   newLabels[v] = X;
+          // }
 
+          write_task_masks_from_arrays(lane_id, plex, PlexSz[0], cand1, Cand1Sz[0], excl, ExclSz[0], newPmask, newCmask, newXmask);
           
           __syncwarp();
           if (lane_id == 0)
@@ -5164,7 +5360,10 @@ __global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_poi
             nt.PlexSz = PlexSz[0];
             nt.CandSz = Cand1Sz[0];
             nt.ExclSz = ExclSz[0];
-            nt.labels = newLabels;
+            nt.Pmask = newPmask;
+            nt.Cmask = newCmask;
+            nt.Xmask = newXmask;
+            // nt.labels = newLabels;
             nt.neiInG = newNeiInG;
             nt.neiInP = newNeiInP;
             atomicAdd(&global_count[0], 1);
@@ -5427,36 +5626,41 @@ __global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_poi
           // if (lane_id == 0) printf("pos: %d, max_cap: %d\n", pos, MAX_CAP/4);
           
           size_t baseOff = (size_t)pos * (size_t)MAX_BLK_SIZE;
-          uint8_t* newLabels = t.d_all_labels_A + baseOff;
+          // uint8_t* newLabels = t.d_all_labels_A + baseOff;
+          uint32_t* newPmask = t.d_all_Pmask_A + (size_t)pos * PCX_MASK_WORDS;
+          uint32_t* newCmask = t.d_all_Cmask_A + (size_t)pos * PCX_MASK_WORDS;
+          uint32_t* newXmask = t.d_all_Xmask_A + (size_t)pos * PCX_MASK_WORDS;
+
           uint16_t* newNeiInG = t.d_all_neiInG_A + baseOff;
           uint16_t* newNeiInP = t.d_all_neiInP_A + baseOff;
           for (int i = lane_id; i < n; i+=32)
           {
-            newLabels[i] = U;
+            // newLabels[i] = U;
             newNeiInG[i] = neiInGBase[i];
             int temp = neiInPBase[i];
             newNeiInP[i] = temp;
           }
-          for (int i = lane_id; i < PlexSz[0]; i+=32)
-          {
-            const int v = plex[i];
-            newLabels[v] = P;
-          }
-          for (int i = lane_id; i < Cand1Sz[0]; i+=32)
-          {
-            const int v = cand1[i];
-            newLabels[v] = C;
-          }
-          for (int i = lane_id; i < Cand2Sz[0]; i+=32)
-          {
-            const int v = cand2[i];
-            newLabels[v] = H;
-          }
-          for (int i = lane_id; i < ExclSz[0]; i+=32)
-          {
-            const int v = excl[i];
-            newLabels[v] = X;
-          }
+          // for (int i = lane_id; i < PlexSz[0]; i+=32)
+          // {
+          //   const int v = plex[i];
+          //   newLabels[v] = P;
+          // }
+          // for (int i = lane_id; i < Cand1Sz[0]; i+=32)
+          // {
+          //   const int v = cand1[i];
+          //   newLabels[v] = C;
+          // }
+          // for (int i = lane_id; i < Cand2Sz[0]; i+=32)
+          // {
+          //   const int v = cand2[i];
+          //   newLabels[v] = H;
+          // }
+          // for (int i = lane_id; i < ExclSz[0]; i+=32)
+          // {
+          //   const int v = excl[i];
+          //   newLabels[v] = X;
+          // }
+          write_task_masks_from_arrays(lane_id, plex, PlexSz[0], cand1, Cand1Sz[0], excl, ExclSz[0], newPmask, newCmask, newXmask);
           __syncwarp();
           // if (warp_id == 0 && lane_id == 0)
           // {
@@ -5476,7 +5680,10 @@ __global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_poi
             nt.PlexSz = PlexSz[0];
             nt.CandSz = Cand1Sz[0];
             nt.ExclSz = ExclSz[0];
-            nt.labels = newLabels;
+            nt.Pmask = newPmask;
+            nt.Cmask = newCmask;
+            nt.Xmask = newXmask;
+            // nt.labels = newLabels;
             nt.neiInG = newNeiInG;
             nt.neiInP = newNeiInP;
             atomicAdd(&global_count[0], 1);
