@@ -2997,7 +2997,467 @@ __device__ int normalize_candidate_pivot_masked(int lane_id, int pivot, const ui
 }
 
 // BNB with DFS Task strategy
-__global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsigned int* d_left, unsigned int* d_blk_counter, unsigned int* d_left_counter, uint8_t* commonMtx, Task* tasks, Task* outTasks, Task* global_tasks, unsigned int N, unsigned int head, unsigned int* tailPtr, unsigned int* global_tail, uint32_t* d_all_Pmask, uint32_t* d_all_Cmask, uint32_t* d_all_Xmask, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint32_t* global_Pmask, uint32_t* global_Cmask, uint32_t* global_Xmask, uint16_t* global_neiInG, uint16_t* global_neiInP, unsigned int* plex_count, uint16_t* d_bnb_neiInG, uint16_t* d_bnb_neiInP, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* abort, unsigned int* global_count)
+// __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsigned int* d_left, unsigned int* d_blk_counter, unsigned int* d_left_counter, uint8_t* commonMtx, Task* tasks, Task* outTasks, Task* global_tasks, unsigned int N, unsigned int head, unsigned int* tailPtr, unsigned int* global_tail, uint32_t* d_all_Pmask, uint32_t* d_all_Cmask, uint32_t* d_all_Xmask, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint32_t* global_Pmask, uint32_t* global_Cmask, uint32_t* global_Xmask, uint16_t* global_neiInG, uint16_t* global_neiInP, unsigned int* plex_count, uint16_t* d_bnb_neiInG, uint16_t* d_bnb_neiInP, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* abort, unsigned int* global_count)
+// { 
+//   unsigned int global_index = blockIdx.x * blockDim.x + threadIdx.x;
+//   unsigned int warp_id = (global_index / 32);
+//   unsigned int lane_id = threadIdx.x % 32;
+//   unsigned int local_warp_id = threadIdx.x >> 5;
+
+//   unsigned int task_pos = head + warp_id + WARPS * i;
+//   if (task_pos >= N) return;
+
+//   int k = p.k;
+//   int q = p.lb;
+//   Task t = tasks[task_pos];
+//   // uint8_t* labelsBase = t.labels;
+
+//   unsigned int* leftBase = d_left + t.idx * MAX_BLK_SIZE;
+//   uint16_t* neiInG = d_bnb_neiInG + warp_id * MAX_BLK_SIZE;
+//   uint16_t* neiInP = d_bnb_neiInP + warp_id * MAX_BLK_SIZE;
+//   unsigned int* left_count = d_left_counter + t.idx;
+//   unsigned int* local_n = d_blk_counter + t.idx;
+//   unsigned int PlexSz = t.PlexSz;
+//   unsigned int CandSz = t.CandSz;
+//   unsigned int ExclSz = t.ExclSz;
+
+//   size_t capacity = size_t(t.idx) * CAP;
+//   uint8_t* commonMtxBase = commonMtx + capacity;
+
+//   unsigned int* degreeBase = s.degree + t.idx * MAX_BLK_SIZE;
+//   unsigned int* l_degreeBase = s.l_degree + t.idx * MAX_BLK_SIZE;
+//   unsigned int* offsetsBase = s.offsets + t.idx * MAX_BLK_SIZE;
+//   unsigned int* neighborsBase = s.neighbors + t.idx * MAX_BLK_SIZE * AVG_DEGREE;
+//   unsigned int* l_offsetsBase = s.l_offsets + t.idx * MAX_BLK_SIZE;
+//   unsigned int* l_neighborsBase = s.l_neighbors + t.idx * MAX_BLK_SIZE * AVG_LEFT_DEGREE;
+
+//   unsigned int* plex = s.PB + warp_id * MAX_BLK_SIZE;
+//   unsigned int* cand = s.CB + warp_id * MAX_BLK_SIZE;
+//   unsigned int* excl = s.XB + warp_id * MAX_BLK_SIZE;
+
+//   uint16_t* local_sat = d_sat + warp_id * MAX_BLK_SIZE;
+//   uint16_t* local_commons = d_commons + warp_id * MAX_BLK_SIZE;
+//   uint32_t* local_uni = d_uni + warp_id * 32;
+
+//   uint32_t* adjList = d_adj + t.idx * ADJSIZE;
+
+//   __shared__ uint32_t sh_Pmask[WARPS_EACH_BLK * PCX_MASK_WORDS];
+//   __shared__ uint32_t sh_Cmask[WARPS_EACH_BLK * PCX_MASK_WORDS];
+//   __shared__ uint32_t sh_Xmask[WARPS_EACH_BLK * PCX_MASK_WORDS];
+//   uint32_t* Pmask = sh_Pmask + local_warp_id * PCX_MASK_WORDS;
+//   uint32_t* Cmask = sh_Cmask + local_warp_id * PCX_MASK_WORDS;
+//   uint32_t* Xmask = sh_Xmask + local_warp_id * PCX_MASK_WORDS;
+
+//   unsigned int n;
+//   if (lane_id == 0) n = local_n[0];
+//   n = __shfl_sync(0xFFFFFFFF, n, 0);
+
+//   for (unsigned int j = lane_id; j < n; j += 32)
+//   {
+//     neiInG[j] = t.neiInG[j];
+//     neiInP[j] = t.neiInP[j];
+//   }
+
+//   copy_pcx_masks(lane_id, t.Pmask, t.Cmask, t.Xmask, Pmask, Cmask, Xmask);
+//   initializePCXFromMasks(lane_id, Pmask, Cmask, Xmask, n, plex, cand, excl);
+  
+//   // initializePCX(lane_id, labelsBase, n, plex, cand, excl);
+//   // initializePCXWithMasks(lane_id, labelsBase, n, plex, cand, excl, Pmask, Cmask, Xmask);
+//   __syncwarp();
+
+//   // LocalDfsFrame* stack_frames = reinterpret_cast<LocalDfsFrame*>(outTasks) + (size_t)warp_id * LOCAL_DFS_FRAME_BYTES;
+//   // uint8_t* stack_bytes0 = d_all_labels;
+//   // uint16_t* stack_bytes1 = d_all_neiInG;
+//   // uint16_t* stack_bytes2 = d_all_neiInP;
+//   // unsigned int stack_top = 0;
+//   // unsigned int depth = 0;
+
+//   for (int local_step = 0; local_step < p.local_bnb_steps; local_step++)
+//   {
+
+//     if (abort[0]) return;
+
+//     if (PlexSz + CandSz < q) return;
+
+//     // if (PlexSz + CandSz < q)
+//     // {
+//     //   if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
+//     //   continue;
+//     // }
+      
+//     if (CandSz == 0)
+//     {
+//       __syncwarp();
+//       if (ExclSz == 0 && PlexSz >= q &&
+//           isMaximal_opt(lane_id, k, PlexSz, leftBase, left_count[0], l_neighborsBase, l_offsetsBase, l_degreeBase, neiInP, neighborsBase, offsetsBase, degreeBase, plex, n, local_sat, local_commons, local_uni))
+//       {
+//         if(lane_id == 0) atomicAdd(&plex_count[0], 1);
+//       }
+//       return;
+//       // if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
+//       // continue;
+//     }
+//     __syncwarp();
+//     // build_pcx_masks(lane_id, plex, PlexSz, cand, CandSz, excl, ExclSz, Pmask, Cmask, Xmask);
+
+//     // if (depth >= local_bnb_steps)
+//     // {
+//     //   if (!enqueue_global_task_from_arrays(lane_id, t.idx, n, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, global_tasks, global_tail, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
+//     //   if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
+//     //   continue;
+//     // }
+    
+      
+//     int minnei_Plex = INT_MAX;
+//     int pivot = -1;
+//     int minnei_Cand = INT_MAX;
+
+//     // for (int i = lane_id; i < PlexSz; i+=32)
+//     // {
+//     //   const int v = plex[i];
+//     //   if (neiInG[v] < minnei_Plex)
+//     //   {
+//     //     minnei_Plex = neiInG[v];
+//     //     pivot = v;
+//     //   }
+//     // }
+
+      
+
+//     // for (int offset = 16; offset > 0; offset >>= 1)
+//     // {
+//     //   int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei_Plex, offset);
+//     //   int otherIdx = __shfl_down_sync(0xFFFFFFFF, pivot, offset);
+//     //   if (otherMin < minnei_Plex || (otherMin == minnei_Plex && otherIdx < pivot))
+//     //   {
+//     //     minnei_Plex = otherMin;
+//     //     pivot = otherIdx;
+//     //   }
+//     // }
+
+//     // minnei_Plex = __shfl_sync(0xFFFFFFFF, minnei_Plex, 0);
+//     // pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
+
+//     select_min_g_from_mask(lane_id, n, Pmask, neiInG, minnei_Plex, pivot);
+
+//     int pivot_plex = pivot;
+      
+//     if (minnei_Plex + k  < max(q, PlexSz)) return;
+//     // if (minnei_Plex + k < max(q, (int)PlexSz))
+//     // {
+//     //   if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
+//     //   continue;
+//     // }
+      
+//     if (minnei_Plex + k < PlexSz + CandSz)
+//     {     
+//       minnei_Cand = INT_MAX;
+//       int minnei_CandP = INT_MAX;
+//       pivot = -1;
+//       // for (int i = lane_id; i < CandSz; i+=32)
+//       // {
+//       //   const int v = cand[i];
+//       //   int check = v * n + pivot_plex;
+//       //   if (!((adjList[check >> 5] >> (check & 31)) & 1u))
+//       //   {
+//       //     if (neiInG[v] < minnei_Cand)
+//       //     {
+//       //       minnei_Cand = neiInG[v];
+//       //       pivot = v;
+//       //     }
+//       //     else if (neiInG[v] == minnei_Cand && neiInP[pivot] > neiInP[v])
+//       //     {
+//       //       pivot = v;
+//       //     }
+//       //   }
+//       // }
+          
+//       // for (int offset = 16; offset > 0; offset >>= 1)
+//       // {
+//       //   int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei_Cand, offset);
+//       //   int otherIdx = __shfl_down_sync(0xFFFFFFFF, pivot, offset);
+//       //   if (otherMin < minnei_Cand || (otherMin == minnei_Cand && otherIdx != -1 && neiInP[pivot] > neiInP[otherIdx]))
+//       //   {
+//       //     minnei_Cand = otherMin;
+//       //     pivot = otherIdx;
+//       //   }
+//       // }
+
+//       // minnei_Cand = __shfl_sync(0xFFFFFFFF, minnei_Cand, 0);
+//       // pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
+
+//       select_min_non_neighbor_g_p_from_cmask(lane_id, n, Cmask, pivot_plex, adjList, neiInG, neiInP, minnei_Cand, minnei_CandP, pivot);
+
+//       if (pivot == -1)
+//       {
+//         pivot = cand[CandSz - 1];
+//       }
+
+//       // if (stack_top >= LOCAL_DFS_STACK_FRAMES)
+//       // {
+//       //   if (!enqueue_global_task_from_arrays(lane_id, t.idx, n, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, global_tasks, global_tail, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
+//       //   if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
+//       //   continue;
+//       // }
+          
+//       if (!enqueue_exclude_task_from_arrays(lane_id, t.idx, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, Pmask, Cmask, Xmask, neighborsBase, offsetsBase, degreeBase, outTasks, global_tasks, tailPtr, global_tail, d_all_Pmask, d_all_Cmask, d_all_Xmask, d_all_neiInG, d_all_neiInP, global_Pmask, global_Cmask, global_Xmask, global_neiInG, global_neiInP, abort, global_count)) return;
+//       // if (!push_exclude_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, depth + 1, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, abort)) return;
+
+//       if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, Pmask, Cmask, Xmask, neiInP, neiInG, pivot, adjList)) return;
+//       // if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, pivot, adjList))
+//       // {
+//       //   depth++;
+//       // }
+//       // else if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
+//       continue;
+//     }
+    
+//     int minnei = minnei_Plex;
+//     int candMinG = INT_MAX;
+//     int candMinP = INT_MAX;
+//     int candPivot = -1;
+
+//     select_min_g_p_from_mask(lane_id, n, Cmask, neiInG, neiInP, candMinG, candMinP, candPivot);
+//     if (better_min_g_p(candMinG, candMinP, candPivot, minnei, (pivot == -1 ? INT_MAX : neiInP[pivot]), pivot))
+//     {
+//       minnei = candMinG;
+//       pivot = candPivot;
+//     }
+
+//     // for (int i = lane_id; i < CandSz; i+=32)
+//     // {
+//     //   const int v = cand[i];
+//     //   if (neiInG[v] < minnei)
+//     //   {
+//     //     minnei = neiInG[v];
+//     //     pivot = v;
+//     //   }
+//     //   else if (neiInG[v] == minnei && neiInP[pivot] > neiInP[v])
+//     //   {
+//     //     pivot = v;
+//     //   }
+//     // }
+
+//     // for(int offset = 16; offset > 0; offset >>= 1)
+//     // {
+//     //   int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei, offset);
+//     //   int otherIdx = __shfl_down_sync(0xFFFFFFFF, pivot, offset);
+
+//     //   if (otherMin < minnei || (otherMin == minnei && otherIdx != -1 && neiInP[pivot] > neiInP[otherIdx]))
+//     //   {
+//     //     minnei = otherMin;
+//     //     pivot = otherIdx;
+//     //   }
+//     // }
+//     // minnei = __shfl_sync(0xFFFFFFFF, minnei, 0);
+//     // pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
+//     if (minnei >= (PlexSz + CandSz - k))
+//     {
+//       if (PlexSz + CandSz < q) return;
+//       // if (PlexSz + CandSz < q)
+//       // {
+//       //   if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
+//       //   continue;
+//       // }
+//       bool flag = false;
+          
+//       for (int i = lane_id; i < ExclSz; i+=32)
+//       {
+//         const int v = excl[i];
+//         if (isKplexPC2(v, k, PlexSz+CandSz, PlexSz, CandSz, neiInG, plex, cand, n, neighborsBase, offsetsBase, degreeBase, adjList))
+//         {
+//           flag = true;
+//         }
+//       }
+          
+//       if (__any_sync(0xFFFFFFFF, flag)) return;
+//       // if (__any_sync(0xFFFFFFFFu, flag))
+//       // {
+//       //   if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
+//       //   continue;
+//       // }
+          
+//       if (isMaximalPC_opt(lane_id, k, PlexSz, CandSz, PlexSz+CandSz, leftBase, left_count[0], l_neighborsBase, l_offsetsBase, l_degreeBase, neiInG, neighborsBase, offsetsBase, degreeBase, plex, cand, n, local_sat, local_commons, local_uni))
+//       {
+//         if (lane_id == 0) atomicAdd(&plex_count[0], 1);
+//       }
+          
+//       return;
+//       // if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
+//       // continue;
+//     }
+
+//     // pivot = normalize_candidate_pivot(lane_id, pivot, cand, CandSz);
+
+//     // if (stack_top >= LOCAL_DFS_STACK_FRAMES)
+//     // {
+//     //   if(!enqueue_global_task_from_arrays(lane_id, t.idx, n, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, global_tasks, global_tail, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
+//     //   if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
+//     //   continue;
+//     // }
+
+//     // if (!push_exclude_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, depth + 1, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, abort)) return;
+
+//     // if (apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, pivot, adjList))
+//     // {
+//     //   depth++;
+//     // }
+//     // else if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
+
+//     if (!enqueue_exclude_task_from_arrays(lane_id, t.idx, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, Pmask, Cmask, Xmask, neighborsBase, offsetsBase, degreeBase, outTasks, global_tasks, tailPtr, global_tail, d_all_Pmask, d_all_Cmask, d_all_Xmask, d_all_neiInG, d_all_neiInP, global_Pmask, global_Cmask, global_Xmask, global_neiInG, global_neiInP, abort, global_count)) return;
+//     if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, Pmask, Cmask, Xmask, neiInP, neiInG, pivot, adjList)) return;
+//   }
+
+//   if (PlexSz + CandSz < q) return;
+//   if (!enqueue_task_from_arrays(lane_id, t.idx, n, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, Pmask, Cmask, Xmask, outTasks, global_tasks, tailPtr, global_tail, d_all_Pmask, d_all_Cmask, d_all_Xmask, d_all_neiInG, d_all_neiInP, global_Pmask, global_Cmask, global_Xmask, global_neiInG, global_neiInP, abort, global_count)) return;
+//   __syncwarp();
+// }
+
+__device__ __forceinline__ bool better_drop_pivot(int drop, int g, int v, int bestDrop, int bestG, int bestV)
+{
+  return v != -1 && (drop > bestDrop || (drop == bestDrop && better_min_g(g, v, bestG, bestV)));
+}
+
+__device__ void select_pivot_drop(int lane_id, unsigned int n, const uint32_t* Cmask, const uint32_t* dropBase, uint16_t* neiInG, int& bestDrop, int& bestG, int& bestV)
+{
+  bestDrop = -1;
+  bestG = INT_MAX;
+  bestV = -1;
+  const int words = (n + 31) >> 5;
+
+  for (int pivotWord = 0; pivotWord < words; pivotWord++)
+  {
+    uint32_t pivotBits = (lane_id == 0) ? Cmask[pivotWord] : 0;
+    pivotBits = __shfl_sync(0xFFFFFFFFu, pivotBits, 0);
+
+    while (pivotBits)
+    {
+      const int pivotBit = __ffs(pivotBits) - 1;
+      const int v = (pivotWord << 5) + pivotBit;
+
+      if (v < n)
+      {
+        // const uint8_t* row = commonMtx + (size_t) v * n;
+        const uint32_t* dropRow = dropBase + (size_t)v * PCX_MASK_WORDS;
+        int laneDrop = 0;
+
+        for (int w = lane_id; w < words; w += 32)
+        {
+          uint32_t bits = dropRow[w] & Cmask[w];
+          if (w == pivotWord) bits &= ~(1u << pivotBit);
+          laneDrop += __popc(bits);
+          // while (bits)
+          // {
+          //   const int bit = __ffs(bits) - 1;
+          //   const int u = (w << 5) + bit;
+          //   if (u < n && row[u] < UNLINK2EQUAL) laneDrop++;
+          //   bits &= bits - 1;
+          // }
+        }
+        int drop = laneDrop;
+        for (int offset = 16; offset > 0; offset >>= 1)
+        {
+          drop += __shfl_down_sync(0xFFFFFFFFu, drop, offset);
+        }
+        drop = __shfl_sync(0xFFFFFFFFu, drop, 0);
+
+        if (lane_id == 0 && better_drop_pivot(drop, neiInG[v], v, bestDrop, bestG, bestV))
+        {
+          bestDrop = drop;
+          bestG = neiInG[v];
+          bestV = v;
+        }
+      }
+
+      pivotBits &= pivotBits - 1;
+    }
+  }
+
+  bestDrop = __shfl_sync(0xFFFFFFFFu, bestDrop, 0);
+  bestG = __shfl_sync(0xFFFFFFFFu, bestG, 0);
+  bestV = __shfl_sync(0xFFFFFFFFu, bestV, 0);
+}
+
+// __device__ void select_pivot_drop2(int lane_id, unsigned int n, const uint32_t* Cmask, const uint32_t* dropBase, int refP, uint16_t* neiInG, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase, int& bestDrop, int& bestG, int& bestV)
+// {
+//   bestDrop = -1;
+//   bestG = INT_MAX;
+//   bestV = -1;
+//   const int words = (n + 31) >> 5;
+
+//   if (refP == -1) return;
+
+//   for (unsigned int ni = 0; ni < degreeBase[refP]; ni++)
+//   {
+//     const int v = neighborsBase[offsetsBase[refP] + ni];
+//     if (v >= n || !mask_has_vertex(Cmask, v)) continue;
+
+//     const int pivotWord = v >> 5;
+//     const int pivotBit = v & 31;
+//     const uint32_t* dropRow = dropBase + (size_t)v * PCX_MASK_WORDS;
+//     int laneDrop = 0;
+
+//     for (int w = lane_id; w < words; w += 32)
+//     {
+//       uint32_t bits = dropRow[w] & Cmask[w];
+//       if (w == pivotWord) bits &= ~(1u << pivotBit);
+//       laneDrop += __popc(bits);
+//     }
+
+//     int drop = laneDrop;
+//     for (int offset = 16; offset > 0; offset >>= 1)
+//     {
+//       drop += __shfl_down_sync(0xFFFFFFFFu, drop, offset);
+//     }
+//     drop = __shfl_sync(0xFFFFFFFFu, drop, 0);
+
+//     if (lane_id == 0 && better_drop_pivot(drop, neiInG[v], v, bestDrop, bestG, bestV))
+//     {
+//       bestDrop = drop;
+//       bestG = neiInG[v];
+//       bestV = v;
+//     }
+//   }
+
+//   bestDrop = __shfl_sync(0xFFFFFFFFu, bestDrop, 0);
+//   bestG = __shfl_sync(0xFFFFFFFFu, bestG, 0);
+//   bestV = __shfl_sync(0xFFFFFFFFu, bestV, 0);
+// }
+
+__device__ void select_pivot_drop2(
+    int lane_id,
+    unsigned int n,
+    const uint32_t* Cmask,
+    int refP,
+    uint16_t* neiInG,
+    unsigned int* neighborsBase,
+    unsigned int* offsetsBase,
+    unsigned int* degreeBase,
+    int& bestG,
+    int& bestV)
+{
+  bestG = INT_MAX;
+  bestV = -1;
+
+  if (refP == -1) return;
+
+  for (unsigned int ni = lane_id; ni < degreeBase[refP]; ni += 32)
+  {
+    const int v = neighborsBase[offsetsBase[refP] + ni];
+
+    if (v < n && mask_has_vertex(Cmask, v) &&
+        better_min_g(neiInG[v], v, bestG, bestV))
+    {
+      bestG = neiInG[v];
+      bestV = v;
+    }
+  }
+
+  reduce_min_g(bestG, bestV);
+}
+
+// BNB DFS + pivot score
+__global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsigned int* d_left, unsigned int* d_blk_counter, unsigned int* d_left_counter, uint8_t* commonMtx, uint32_t* d_drop, Task* tasks, Task* outTasks, Task* global_tasks, unsigned int N, unsigned int head, unsigned int* tailPtr, unsigned int* global_tail, uint32_t* d_all_Pmask, uint32_t* d_all_Cmask, uint32_t* d_all_Xmask, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint32_t* global_Pmask, uint32_t* global_Cmask, uint32_t* global_Xmask, uint16_t* global_neiInG, uint16_t* global_neiInP, unsigned int* plex_count, uint16_t* d_bnb_neiInG, uint16_t* d_bnb_neiInP, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* abort, unsigned int* global_count)
 { 
   unsigned int global_index = blockIdx.x * blockDim.x + threadIdx.x;
   unsigned int warp_id = (global_index / 32);
@@ -3040,6 +3500,7 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
   uint32_t* local_uni = d_uni + warp_id * 32;
 
   uint32_t* adjList = d_adj + t.idx * ADJSIZE;
+  uint32_t* dropBase = d_drop + t.idx * ADJSIZE;
 
   __shared__ uint32_t sh_Pmask[WARPS_EACH_BLK * PCX_MASK_WORDS];
   __shared__ uint32_t sh_Cmask[WARPS_EACH_BLK * PCX_MASK_WORDS];
@@ -3109,8 +3570,8 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
     
       
     int minnei_Plex = INT_MAX;
-    int pivot = -1;
-    int minnei_Cand = INT_MAX;
+    int plexPivot = -1;
+    // int minnei_Cand = INT_MAX;
 
     // for (int i = lane_id; i < PlexSz; i+=32)
     // {
@@ -3138,91 +3599,116 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
     // minnei_Plex = __shfl_sync(0xFFFFFFFF, minnei_Plex, 0);
     // pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
 
-    select_min_g_from_mask(lane_id, n, Pmask, neiInG, minnei_Plex, pivot);
+    select_min_g_from_mask(lane_id, n, Pmask, neiInG, minnei_Plex, plexPivot);
 
-    int pivot_plex = pivot;
+    // int pivot_plex = pivot;
       
     if (minnei_Plex + k  < max(q, PlexSz)) return;
+
+    // if (lane_id == 0) printf("plex pivot in warp %d has slack %d\n", warp_id, minnei_Plex + k - max(q, PlexSz));
+
+    // unsigned int slack = minnei_Plex + k - max(q, PlexSz);
+    // if (lane_id == 0)
+    // {
+    //   int count = 0;
+    //   if (slack == 0)
+    //   {
+    //     for (int i = 0; i < PlexSz; i++)
+    //     {
+    //       unsigned int v = plex[i];
+    //       if (neiInG[v] == minnei_Plex)
+    //       {
+    //         count++;
+    //       }
+    //     }
+    //     printf("Nodes with same slack are %d\n", count);
+    //   }
+    // }
+
     // if (minnei_Plex + k < max(q, (int)PlexSz))
     // {
     //   if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
     //   continue;
     // }
       
-    if (minnei_Plex + k < PlexSz + CandSz)
-    {     
-      minnei_Cand = INT_MAX;
-      int minnei_CandP = INT_MAX;
-      pivot = -1;
-      // for (int i = lane_id; i < CandSz; i+=32)
-      // {
-      //   const int v = cand[i];
-      //   int check = v * n + pivot_plex;
-      //   if (!((adjList[check >> 5] >> (check & 31)) & 1u))
-      //   {
-      //     if (neiInG[v] < minnei_Cand)
-      //     {
-      //       minnei_Cand = neiInG[v];
-      //       pivot = v;
-      //     }
-      //     else if (neiInG[v] == minnei_Cand && neiInP[pivot] > neiInP[v])
-      //     {
-      //       pivot = v;
-      //     }
-      //   }
-      // }
+    // if (minnei_Plex + k < PlexSz + CandSz)
+    // {     
+    //   minnei_Cand = INT_MAX;
+    //   int minnei_CandP = INT_MAX;
+    //   pivot = -1;
+    //   // for (int i = lane_id; i < CandSz; i+=32)
+    //   // {
+    //   //   const int v = cand[i];
+    //   //   int check = v * n + pivot_plex;
+    //   //   if (!((adjList[check >> 5] >> (check & 31)) & 1u))
+    //   //   {
+    //   //     if (neiInG[v] < minnei_Cand)
+    //   //     {
+    //   //       minnei_Cand = neiInG[v];
+    //   //       pivot = v;
+    //   //     }
+    //   //     else if (neiInG[v] == minnei_Cand && neiInP[pivot] > neiInP[v])
+    //   //     {
+    //   //       pivot = v;
+    //   //     }
+    //   //   }
+    //   // }
           
-      // for (int offset = 16; offset > 0; offset >>= 1)
-      // {
-      //   int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei_Cand, offset);
-      //   int otherIdx = __shfl_down_sync(0xFFFFFFFF, pivot, offset);
-      //   if (otherMin < minnei_Cand || (otherMin == minnei_Cand && otherIdx != -1 && neiInP[pivot] > neiInP[otherIdx]))
-      //   {
-      //     minnei_Cand = otherMin;
-      //     pivot = otherIdx;
-      //   }
-      // }
+    //   // for (int offset = 16; offset > 0; offset >>= 1)
+    //   // {
+    //   //   int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei_Cand, offset);
+    //   //   int otherIdx = __shfl_down_sync(0xFFFFFFFF, pivot, offset);
+    //   //   if (otherMin < minnei_Cand || (otherMin == minnei_Cand && otherIdx != -1 && neiInP[pivot] > neiInP[otherIdx]))
+    //   //   {
+    //   //     minnei_Cand = otherMin;
+    //   //     pivot = otherIdx;
+    //   //   }
+    //   // }
 
-      // minnei_Cand = __shfl_sync(0xFFFFFFFF, minnei_Cand, 0);
-      // pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
+    //   // minnei_Cand = __shfl_sync(0xFFFFFFFF, minnei_Cand, 0);
+    //   // pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
 
-      select_min_non_neighbor_g_p_from_cmask(lane_id, n, Cmask, pivot_plex, adjList, neiInG, neiInP, minnei_Cand, minnei_CandP, pivot);
+    //   select_min_non_neighbor_g_p_from_cmask(lane_id, n, Cmask, pivot_plex, adjList, neiInG, neiInP, minnei_Cand, minnei_CandP, pivot);
 
-      if (pivot == -1)
-      {
-        pivot = cand[CandSz - 1];
-      }
+    //   if (pivot == -1)
+    //   {
+    //     pivot = cand[CandSz - 1];
+    //   }
 
-      // if (stack_top >= LOCAL_DFS_STACK_FRAMES)
-      // {
-      //   if (!enqueue_global_task_from_arrays(lane_id, t.idx, n, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, global_tasks, global_tail, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
-      //   if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
-      //   continue;
-      // }
+    //   // if (stack_top >= LOCAL_DFS_STACK_FRAMES)
+    //   // {
+    //   //   if (!enqueue_global_task_from_arrays(lane_id, t.idx, n, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, global_tasks, global_tail, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
+    //   //   if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
+    //   //   continue;
+    //   // }
           
-      if (!enqueue_exclude_task_from_arrays(lane_id, t.idx, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, Pmask, Cmask, Xmask, neighborsBase, offsetsBase, degreeBase, outTasks, global_tasks, tailPtr, global_tail, d_all_Pmask, d_all_Cmask, d_all_Xmask, d_all_neiInG, d_all_neiInP, global_Pmask, global_Cmask, global_Xmask, global_neiInG, global_neiInP, abort, global_count)) return;
-      // if (!push_exclude_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, depth + 1, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, abort)) return;
+    //   if (!enqueue_exclude_task_from_arrays(lane_id, t.idx, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, Pmask, Cmask, Xmask, neighborsBase, offsetsBase, degreeBase, outTasks, global_tasks, tailPtr, global_tail, d_all_Pmask, d_all_Cmask, d_all_Xmask, d_all_neiInG, d_all_neiInP, global_Pmask, global_Cmask, global_Xmask, global_neiInG, global_neiInP, abort, global_count)) return;
+    //   // if (!push_exclude_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, depth + 1, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, abort)) return;
 
-      if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, Pmask, Cmask, Xmask, neiInP, neiInG, pivot, adjList)) return;
-      // if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, pivot, adjList))
-      // {
-      //   depth++;
-      // }
-      // else if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
-      continue;
-    }
+    //   if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, Pmask, Cmask, Xmask, neiInP, neiInG, pivot, adjList)) return;
+    //   // if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, pivot, adjList))
+    //   // {
+    //   //   depth++;
+    //   // }
+    //   // else if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
+    //   continue;
+    // }
     
-    int minnei = minnei_Plex;
-    int candMinG = INT_MAX;
-    int candMinP = INT_MAX;
-    int candPivot = -1;
+    // int minnei = minnei_Plex;
+    // int candMinG = INT_MAX;
+    // int candMinP = INT_MAX;
+    // int candPivot = -1;
 
-    select_min_g_p_from_mask(lane_id, n, Cmask, neiInG, neiInP, candMinG, candMinP, candPivot);
-    if (better_min_g_p(candMinG, candMinP, candPivot, minnei, (pivot == -1 ? INT_MAX : neiInP[pivot]), pivot))
-    {
-      minnei = candMinG;
-      pivot = candPivot;
-    }
+    // select_min_g_p_from_mask(lane_id, n, Cmask, neiInG, neiInP, candMinG, candMinP, candPivot);
+    // if (better_min_g_p(candMinG, candMinP, candPivot, minnei, (pivot == -1 ? INT_MAX : neiInP[pivot]), pivot))
+    // {
+    //   minnei = candMinG;
+    //   pivot = candPivot;
+    // }
+
+    int minnei_Cand = INT_MAX;
+    int candPivot = -1;
+    select_min_g_from_mask(lane_id, n, Cmask, neiInG, minnei_Cand, candPivot);
 
     // for (int i = lane_id; i < CandSz; i+=32)
     // {
@@ -3251,6 +3737,7 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
     // }
     // minnei = __shfl_sync(0xFFFFFFFF, minnei, 0);
     // pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
+    int minnei = min(minnei_Plex, minnei_Cand);
     if (minnei >= (PlexSz + CandSz - k))
     {
       if (PlexSz + CandSz < q) return;
@@ -3303,6 +3790,38 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
     //   depth++;
     // }
     // else if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
+
+    int dropScore = -1;
+    int dropPivot = INT_MAX;
+    int pivot = -1;
+    // select_pivot_drop(lane_id, n, Cmask, dropBase, neiInG, dropScore, dropPivot, pivot);
+    // select_pivot_drop2(lane_id, n, Cmask, dropBase, plexPivot, neiInG, neighborsBase, offsetsBase, degreeBase, dropScore, dropPivot, pivot);
+    int neighborMinG = INT_MAX;
+
+    select_pivot_drop2(
+        lane_id,
+        n,
+        Cmask,
+        plexPivot,        // node in P with min slack / min neiInG
+        neiInG,
+        neighborsBase,
+        offsetsBase,
+        degreeBase,
+        neighborMinG,
+        pivot);
+
+    if (pivot == -1)
+    {
+      pivot = candPivot;  // fallback: min neiInG in C
+    }
+    // if (dropScore <= 0 || pivot == -1)
+    // {
+    //   pivot = candPivot;
+    // }
+    // if (pivot == -1)
+    // {
+    //   pivot = cand[CandSz - 1];
+    // }
 
     if (!enqueue_exclude_task_from_arrays(lane_id, t.idx, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, Pmask, Cmask, Xmask, neighborsBase, offsetsBase, degreeBase, outTasks, global_tasks, tailPtr, global_tail, d_all_Pmask, d_all_Cmask, d_all_Xmask, d_all_neiInG, d_all_neiInP, global_Pmask, global_Cmask, global_Xmask, global_neiInG, global_neiInP, abort, global_count)) return;
     if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, Pmask, Cmask, Xmask, neiInP, neiInG, pivot, adjList)) return;
@@ -5043,7 +5562,16 @@ __device__ int commonEle(int i, int j, unsigned int* neighborsBase, unsigned int
 
 }
 
-__global__ void buildCommonMtx(int idx, P_pointers p, S_pointers s, G_pointers g, uint8_t* commonMtx, unsigned int* d_hopSz)
+__device__ __forceinline__ void mark_drop_pair(uint32_t* dropBase, int i, int j, uint8_t value)
+{
+  if (value < UNLINK2EQUAL)
+  {
+    dropBase[(size_t)i * PCX_MASK_WORDS + (j >> 5)] |= 1u << (j & 31);
+    atomicOr(&dropBase[(size_t)j * PCX_MASK_WORDS + (i >> 5)], 1u << (i & 31));
+  }
+}
+
+__global__ void buildCommonMtx(int idx, P_pointers p, S_pointers s, G_pointers g, uint8_t* commonMtx, unsigned int* d_hopSz, uint32_t* d_drop)
 {
   unsigned int global_index = blockIdx.x * blockDim.x + threadIdx.x;
   unsigned int warp_id = (global_index / 32);
@@ -5063,6 +5591,7 @@ __global__ void buildCommonMtx(int idx, P_pointers p, S_pointers s, G_pointers g
   // uint8_t* commonMtxBase = commonMtx + warp_id * CAP;
   size_t capacity = size_t(warp_id) * CAP;
   uint8_t* commonMtxBase = commonMtx + capacity;
+  uint32_t* dropBase = d_drop + (size_t)warp_id * ADJSIZE;
   const int thresPP1=lb-k-2*max(k-2,0),thresPP2=lb-k-2*max(k-3,0);
   const int thresPC1=lb-2*k-max(k-2,0),thresPC2=lb-k-1-max(k-2,0)-max(k-3,0);
   const int thresCC1=lb-2*k-(k-1),thresCC2=lb-2*k+2-(k-1);
@@ -5094,6 +5623,7 @@ __global__ void buildCommonMtx(int idx, P_pointers p, S_pointers s, G_pointers g
         else commonMtxBase[i*n+j]=UNLINK2LESS;
       }
       commonMtxBase[j*n+i] = commonMtxBase[i*n+j];
+      mark_drop_pair(dropBase, i, j, commonMtxBase[i*n+j]);
     }
   }
   for (int i = hop+lane_id; i < n;i+=32)
@@ -5113,8 +5643,17 @@ __global__ void buildCommonMtx(int idx, P_pointers p, S_pointers s, G_pointers g
         else commonMtxBase[i*n+j]=UNLINK2LESS;
       }
       commonMtxBase[j*n+i]=commonMtxBase[i*n+j];
+      mark_drop_pair(dropBase, i, j, commonMtxBase[i*n+j]);
     }
-    if (k==2) continue;
+    // if (k==2) continue;
+    if (k == 2)
+    {
+      for (int j = hop; j < i; j++)
+      {
+        mark_drop_pair(dropBase, i, j, commonMtxBase[i*n+j]);
+      }
+      continue;
+    }
     for (int j = hop; j<i; j++)
     {
       const int common = commonEle(i, j, neighborsBase, offsetsBase, degreeHop);
@@ -5130,6 +5669,7 @@ __global__ void buildCommonMtx(int idx, P_pointers p, S_pointers s, G_pointers g
         else commonMtxBase[i*n+j]=UNLINK2LESS;
       }
       commonMtxBase[j*n+i]=commonMtxBase[i*n+j];
+      mark_drop_pair(dropBase, i, j, commonMtxBase[i*n+j]);
     }
   }
 
@@ -5366,7 +5906,7 @@ __global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_poi
             // nt.labels = newLabels;
             nt.neiInG = newNeiInG;
             nt.neiInP = newNeiInP;
-            atomicAdd(&global_count[0], 1);
+            // atomicAdd(&global_count[0], 1);
           // __syncwarp();
           // if (warp_id == 0)
           // {
@@ -5686,7 +6226,7 @@ __global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_poi
             // nt.labels = newLabels;
             nt.neiInG = newNeiInG;
             nt.neiInP = newNeiInP;
-            atomicAdd(&global_count[0], 1);
+            // atomicAdd(&global_count[0], 1);
           }
           __syncwarp();
 
