@@ -5,8 +5,7 @@
 #define BLK_DIM 1024
 #define WARPS_EACH_BLK (BLK_DIM/32)
 #define WARPS (BLK_NUMS*WARPS_EACH_BLK)
-#define MAX_BLK_SIZE 1024 // Maximum size of my neighborhood
-#define PCX_MASK_WORDS ((MAX_BLK_SIZE + 31) / 32) 
+#define MAX_BLK_SIZE 1024 // Maximum size of my neighborhood 
 #define AVG_DEGREE 200
 #define AVG_LEFT_DEGREE 200
 #define MAX_CAP 2048 * 2048 
@@ -29,8 +28,7 @@
 #define K_LIMIT 10
 #define MAX_DEPTH 1000
 #define CAP MAX_BLK_SIZE * MAX_BLK_SIZE
-// #define ADJSIZE ((MAX_BLK_SIZE * MAX_BLK_SIZE) / 32)
-#define ADJSIZE (MAX_BLK_SIZE * PCX_MASK_WORDS)
+#define ADJSIZE ((MAX_BLK_SIZE * MAX_BLK_SIZE) / 32)
 #define STAGING_CHUNK 1024*1024
 
 #define TINY_FRONTIER_CAP (MAX_CAP * 4)
@@ -182,9 +180,6 @@ struct Task{
     unsigned int CandSz;
     unsigned int ExclSz;
     uint8_t* labels; // labels = [P, C ,X ,C, C]
-    uint32_t* Pmask;
-    uint32_t* Cmask;
-    uint32_t* Xmask;
     uint16_t* neiInG;
     uint16_t* neiInP;
 
@@ -196,18 +191,12 @@ struct Task{
          unsigned int ExclSz_,
          uint8_t* labels_,
          uint16_t* neiInG_,
-         uint16_t* neiInP_,
-         uint32_t* Pmask_ = nullptr,
-         uint32_t* Cmask_ = nullptr,
-         uint32_t* Xmask_ = nullptr)
+         uint16_t* neiInP_)
          : idx(idx_)
          , PlexSz(PlexSz_)
          , CandSz(CandSz_)
          , ExclSz(ExclSz_)
          , labels(labels_)
-         , Pmask(Pmask_)
-         , Cmask(Cmask_)
-         , Xmask(Xmask_)
          , neiInG(neiInG_)
          , neiInP(neiInP_)
     {}
@@ -378,9 +367,6 @@ struct Frame{
 typedef struct T_pointers{
     Task* d_tasks_A;
     uint8_t* d_all_labels_A;
-    uint32_t* d_all_Pmask_A;
-    uint32_t* d_all_Cmask_A;
-    uint32_t* d_all_Xmask_A;
     uint16_t* d_all_neiInG_A;
     uint16_t* d_all_neiInP_A;
     unsigned int* d_tail_A;
@@ -390,9 +376,6 @@ typedef struct T_pointers{
 
     Task* d_tasks_B;
     uint8_t* d_all_labels_B;
-    uint32_t* d_all_Pmask_B;
-    uint32_t* d_all_Cmask_B;
-    uint32_t* d_all_Xmask_B;
     uint16_t* d_all_neiInG_B;
     uint16_t* d_all_neiInP_B;
     unsigned int* d_tail_B;
@@ -402,9 +385,6 @@ typedef struct T_pointers{
 
     Task* d_tasks_C;
     uint8_t* d_all_labels_C;
-    uint32_t* d_all_Pmask_C;
-    uint32_t* d_all_Cmask_C;
-    uint32_t* d_all_Xmask_C;
     uint16_t* d_all_neiInG_C;
     uint16_t* d_all_neiInP_C;
     unsigned int* d_tail_C;

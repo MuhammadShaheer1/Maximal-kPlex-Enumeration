@@ -25,23 +25,6 @@ __device__ bool binary_search(unsigned int node, unsigned int *buffer, unsigned 
   return (lo < len) && (buffer[lo] == node);
 }
 
-__device__ __forceinline__ uint32_t* local_adj_row(uint32_t* adjList, unsigned int u)
-{
-  return adjList + (size_t)u * PCX_MASK_WORDS;
-}
-
-__device__ __forceinline__ void local_adj_set(uint32_t* adjList, unsigned int u, unsigned int v)
-{
-  atomicOr(&local_adj_row(adjList, u)[v >> 5], 1u << (v & 31));
-}
-
-__device__ __forceinline__ bool local_adjacent(uint32_t* adjList, unsigned int n, unsigned int u, unsigned int v)
-{
-  return ((local_adj_row(adjList, (unsigned int)u)[(unsigned int)v >> 5] >> ((unsigned int)v & 31)) & 1u);
-}
-
-
-
 __global__ void decompose(int i, P_pointers p, G_pointers g, D_pointers d, unsigned int *d_blk, unsigned int *d_blk_counter, unsigned int *d_left, unsigned int *d_left_counter, uint32_t *visited, unsigned int *global_count, unsigned int *left_count, unsigned int *validblk, unsigned int* d_hopSz, unsigned long long* cycles)
 {
   unsigned int global_index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -437,11 +420,9 @@ __global__ void fillNeighbors(int i, S_pointers s, P_pointers p, G_pointers g, u
       if (binary_search(nei, g.neighbors+g.offsets[origin], g.degree[origin]))
       {
         int v = idx*counter+j;
-        // int v2 = j*counter + idx;
-        // atomicOr(&adjList[v >> 5], 1u << (v & 31));
-        // atomicOr(&adjList[v2 >> 5], 1u << (v2 & 31));
-        local_adj_set(adjList, idx, j);
-        local_adj_set(adjList, j, idx);
+        int v2 = j*counter + idx;
+        atomicOr(&adjList[v >> 5], 1u << (v & 31));
+        atomicOr(&adjList[v2 >> 5], 1u << (v2 & 31));
         commonMtxBase[v] = 1;
         neighborsBase[offset+cnt] = j;
         cnt++;
@@ -596,8 +577,7 @@ __device__ bool isKplex2(int lane_id, int v, int k, unsigned int PlexSz, uint16_
   {
     const int u = plex[i];
     int check = u * n + v;
-    // if (neiInP[u] + k == PlexSz && !((adjList[check >> 5] >> (check & 31)) & 1u)) localPass = false;
-    if (neiInP[u] + k == PlexSz && !local_adjacent(adjList, n, u, v)) localPass = false;
+    if (neiInP[u] + k == PlexSz && !((adjList[check >> 5] >> (check & 31)) & 1u)) localPass = false;
   }
   if (__any_sync(mask, !localPass)) return false;
   return true;
@@ -613,8 +593,7 @@ __device__ bool isKplex3(int v, int k, unsigned int PlexSz, uint16_t* neiInP, un
   {
     const int u = plex[i];
     int check = u * n + v;
-    // if (neiInP[u] + k == PlexSz && !((adjList[check >> 5] >> (check & 31)) & 1u)) return false;
-    if (neiInP[u] + k == PlexSz && !local_adjacent(adjList, n, u, v)) return false;
+    if (neiInP[u] + k == PlexSz && !((adjList[check >> 5] >> (check & 31)) & 1u)) return false;
   }
   return true;
 }
@@ -629,16 +608,14 @@ __device__ bool isKplexPC2(int v, int k, unsigned int totalSz, unsigned int Plex
   {
     const int u = plex[i];
     int check = u * n + v;
-    // if (missing[u] + k == (totalSz) && !((adjList[check >> 5] >> (check & 31)) & 1u))
-    if (missing[u] + k == (totalSz) && !local_adjacent(adjList, n, u, v))
+    if (missing[u] + k == (totalSz) && !((adjList[check >> 5] >> (check & 31)) & 1u))
         return false;
   }
   for (int i = 0; i < CandSz; i++)
   {
     const int u = cand[i];
     int check = u * n + v;
-    // if (missing[u] + k == (totalSz) && !((adjList[check >> 5] >> (check & 31)) & 1u))
-    if (missing[u] + k == (totalSz) && !local_adjacent(adjList, n, u, v))
+    if (missing[u] + k == (totalSz) && !((adjList[check >> 5] >> (check & 31)) & 1u))
         return false;
   }
   return true;
@@ -2139,14 +2116,10 @@ __global__ void seedInitialTinyTasks(Task* parent_tasks, TinyTask* tiny_tasks, u
 //   __syncwarp();
 // }
 
-__device__ bool reserve_task_slot(int lane_id, Task* tasks, Task* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, uint32_t* d_all_Pmask, uint32_t* d_all_Cmask, uint32_t* d_all_Xmask, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint32_t* global_Pmask, uint32_t* global_Cmask, uint32_t* global_Xmask, uint16_t* global_neiInG, uint16_t* global_neiInP, int* abort, Task*& localTasks, uint32_t*& all_Pmask, uint32_t*& all_Cmask, uint32_t*& all_Xmask, uint16_t*& all_neiInG, uint16_t*& all_neiInP, unsigned int& pos)
+__device__ bool reserve_task_slot(int lane_id, Task* tasks, Task* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, int* abort, Task*& localTasks, uint8_t*& labels, uint16_t*& all_neiInG, uint16_t*& all_neiInP, unsigned int& pos)
 {
   localTasks = tasks;
-  // labels = d_all_labels;
-  all_Pmask = d_all_Pmask;
-  all_Cmask = d_all_Cmask;
-  all_Xmask = d_all_Xmask;
-
+  labels = d_all_labels;
   all_neiInG = d_all_neiInG;
   all_neiInP = d_all_neiInP;
 
@@ -2168,11 +2141,7 @@ __device__ bool reserve_task_slot(int lane_id, Task* tasks, Task* global_tasks, 
       return false;
     }
     localTasks = global_tasks;
-    // labels = global_labels;
-    all_Pmask = global_Pmask;
-    all_Cmask = global_Cmask;
-    all_Xmask = global_Xmask;
-
+    labels = global_labels;
     all_neiInG = global_neiInG;
     all_neiInP = global_neiInP;
   }
@@ -2390,6 +2359,58 @@ __device__ bool pop_local_dfs_snapshot(int warp_id, int lane_id, unsigned int& s
   return true;
 }
 
+
+__device__ bool enqueue_exclude_task_from_arrays(int lane_id, int task_idx, unsigned int n, unsigned int pivot, unsigned int* plex, unsigned int PlexSz, unsigned int* cand, unsigned int CandSz, unsigned int* excl, unsigned int ExclSz, uint16_t* neiInG, uint16_t* neiInP, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase, Task* tasks, Task* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, int* abort, unsigned int* global_count)
+{
+  Task* localTasks = tasks;
+  uint8_t* labels = d_all_labels;
+  uint16_t* all_neiInG = d_all_neiInG;
+  uint16_t* all_neiInP = d_all_neiInP;
+  unsigned int pos = 0;
+
+  if (CandSz == 0) return false;
+  if (!reserve_task_slot(lane_id, tasks, global_tasks, tailPtr, global_tail, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, abort, localTasks, labels, all_neiInG, all_neiInP, pos)) return false;
+
+
+  uint8_t* childLabels = labels + (size_t)pos * MAX_BLK_SIZE;
+  uint16_t* childNeiInG = all_neiInG + (size_t)pos * MAX_BLK_SIZE;
+  uint16_t* childNeiInP = all_neiInP + (size_t)pos * MAX_BLK_SIZE;
+
+  for (unsigned int j = lane_id; j < n; j += 32)
+  {
+    childLabels[j] = U;
+    childNeiInG[j] = neiInG[j];
+    childNeiInP[j] = neiInP[j];
+  }
+  __syncwarp();
+
+  for (unsigned int j = lane_id; j < PlexSz; j += 32) childLabels[plex[j]] = P;
+  for (unsigned int j = lane_id; j < CandSz; j += 32) childLabels[cand[j]] = C;
+  for (unsigned int j = lane_id; j < ExclSz; j += 32) childLabels[excl[j]] = X;
+  __syncwarp();
+
+  if (lane_id == 0) childLabels[pivot] = X;
+  __syncwarp();
+
+  subG(lane_id, pivot, childNeiInG, n, neighborsBase, offsetsBase, degreeBase);
+  __syncwarp();
+
+  if (lane_id == 0)
+  {
+    Task &nt = localTasks[pos];
+    nt.idx = task_idx;
+    nt.PlexSz = PlexSz;
+    nt.CandSz = CandSz - 1;
+    nt.ExclSz = ExclSz + 1;
+    nt.labels = childLabels;
+    nt.neiInG = childNeiInG;
+    nt.neiInP = childNeiInP;
+    atomicAdd(&global_count[0], 1);
+  }
+
+  return true;
+}
+
 __device__ bool remove_unsorted_value(unsigned int* data, unsigned int& sz, unsigned int value)
 {
   for (unsigned int i = 0; i < sz; i++)
@@ -2404,113 +2425,13 @@ __device__ bool remove_unsorted_value(unsigned int* data, unsigned int& sz, unsi
   return false;
 }
 
-__device__ __forceinline__ void mask_set_vertex(uint32_t* mask, unsigned int v)
-{
-  mask[v >> 5] |= (1u << (v & 31));
-}
-
-__device__ __forceinline__ void mask_clear_vertex(uint32_t* mask, unsigned int v)
-{
-  mask[v >> 5] &= ~(1u << (v & 31));
-}
-
-__device__ __forceinline__ void move_mask_c_to_p(uint32_t* Pmask, uint32_t* Cmask, unsigned int v)
-{
-  mask_clear_vertex(Cmask, v);
-  mask_set_vertex(Pmask, v);
-}
-
-__device__ void copy_pcx_masks(int lane_id, const uint32_t* srcPmask, const uint32_t* srcCmask, const uint32_t* srcXmask, uint32_t* dstPmask, uint32_t* dstCmask, uint32_t* dstXmask)
-{
-  for (int w = lane_id; w < PCX_MASK_WORDS; w += 32)
-  {
-    dstPmask[w] = srcPmask[w];
-    dstCmask[w] = srcCmask[w];
-    dstXmask[w] = srcXmask[w];
-  }
-  __syncwarp();
-}
-
-__device__ bool enqueue_exclude_task_from_arrays(int lane_id, int task_idx, unsigned int n, unsigned int pivot, unsigned int* plex, unsigned int PlexSz, unsigned int* cand, unsigned int CandSz, unsigned int* excl, unsigned int ExclSz, uint16_t* neiInG, uint16_t* neiInP, uint32_t* Pmask, uint32_t* Cmask, uint32_t* Xmask, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase, Task* tasks, Task* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, uint32_t* d_all_Pmask, uint32_t* d_all_Cmask, uint32_t* d_all_Xmask, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint32_t* global_Pmask, uint32_t* global_Cmask, uint32_t* global_Xmask, uint16_t* global_neiInG, uint16_t* global_neiInP, int* abort, unsigned int* global_count)
-{
-  Task* localTasks = tasks;
-  // uint8_t* labels = d_all_labels;
-  uint32_t* all_Pmask = d_all_Pmask;
-  uint32_t* all_Cmask = d_all_Cmask;
-  uint32_t* all_Xmask = d_all_Xmask;
-
-  uint16_t* all_neiInG = d_all_neiInG;
-  uint16_t* all_neiInP = d_all_neiInP;
-  unsigned int pos = 0;
-
-  if (CandSz == 0) return false;
-  if (!reserve_task_slot(lane_id, tasks, global_tasks, tailPtr, global_tail, d_all_Pmask, d_all_Cmask, d_all_Xmask, d_all_neiInG, d_all_neiInP, global_Pmask, global_Cmask, global_Xmask, global_neiInG, global_neiInP, abort, localTasks, all_Pmask, all_Cmask, all_Xmask, all_neiInG, all_neiInP, pos)) return false;
-
-
-  // uint8_t* childLabels = labels + (size_t)pos * MAX_BLK_SIZE;
-  uint32_t* childPmask = all_Pmask + (size_t)pos * PCX_MASK_WORDS;
-  uint32_t* childCmask = all_Cmask + (size_t)pos * PCX_MASK_WORDS;
-  uint32_t* childXmask = all_Xmask + (size_t)pos * PCX_MASK_WORDS;
-
-  uint16_t* childNeiInG = all_neiInG + (size_t)pos * MAX_BLK_SIZE;
-  uint16_t* childNeiInP = all_neiInP + (size_t)pos * MAX_BLK_SIZE;
-
-  copy_pcx_masks(lane_id, Pmask, Cmask, Xmask, childPmask, childCmask, childXmask);
-  
-  if (lane_id == 0)
-  {
-    mask_clear_vertex(childCmask, pivot);
-    mask_set_vertex(childXmask, pivot);
-  }
-  __syncwarp();
-
-  for (unsigned int j = lane_id; j < n; j += 32)
-  {
-    // childLabels[j] = U;
-    childNeiInG[j] = neiInG[j];
-    childNeiInP[j] = neiInP[j];
-  }
-  __syncwarp();
-
-  // for (unsigned int j = lane_id; j < PlexSz; j += 32) childLabels[plex[j]] = P;
-  // for (unsigned int j = lane_id; j < CandSz; j += 32) childLabels[cand[j]] = C;
-  // for (unsigned int j = lane_id; j < ExclSz; j += 32) childLabels[excl[j]] = X;
-  // __syncwarp();
-
-  // if (lane_id == 0) childLabels[pivot] = X;
-  // __syncwarp();
-
-  subG(lane_id, pivot, childNeiInG, n, neighborsBase, offsetsBase, degreeBase);
-  __syncwarp();
-
-  if (lane_id == 0)
-  {
-    Task &nt = localTasks[pos];
-    nt.idx = task_idx;
-    nt.PlexSz = PlexSz;
-    nt.CandSz = CandSz - 1;
-    nt.ExclSz = ExclSz + 1;
-    // nt.labels = childLabels;
-    nt.Pmask = childPmask;
-    nt.Cmask = childCmask;
-    nt.Xmask = childXmask;
-
-    nt.neiInG = childNeiInG;
-    nt.neiInP = childNeiInP;
-    atomicAdd(&global_count[0], 1);
-  }
-
-  return true;
-}
-
-__device__ bool apply_include_branch_unsorted(int lane_id, int k, int lb, unsigned int n, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase, uint8_t* commonMtx, unsigned int* plex, unsigned int& PlexSz, unsigned int* cand, unsigned int& CandSz, unsigned int* excl, unsigned int& ExclSz, uint32_t* Pmask, uint32_t* Cmask, uint32_t* Xmask, uint16_t* neiInP, uint16_t* neiInG, int minIndex, uint32_t* adjList)
+__device__ bool apply_include_branch_unsorted(int lane_id, int k, int lb, unsigned int n, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase, uint8_t* commonMtx, unsigned int* plex, unsigned int& PlexSz, unsigned int* cand, unsigned int& CandSz, unsigned int* excl, unsigned int& ExclSz, uint16_t* neiInP, uint16_t* neiInG, int minIndex, uint32_t* adjList)
 {
   int moved = 1;
   if (lane_id == 0)
   {
     plex[PlexSz++] = minIndex;
     moved = remove_unsorted_value(cand, CandSz, minIndex) ? 1 : 0;
-    if (moved) move_mask_c_to_p(Pmask, Cmask, minIndex);
   }
 
   moved = __shfl_sync(0xFFFFFFFFu, moved, 0);
@@ -2556,7 +2477,6 @@ __device__ bool apply_include_branch_unsorted(int lane_id, int k, int lb, unsign
     {
       const int leader = __ffs(dropmask) - 1;
       const unsigned vdrop = __shfl_sync(0xFFFFFFFFu, v, leader);
-      if (lane_id == 0) mask_clear_vertex(Cmask, vdrop);
       subG(lane_id, vdrop, neiInG, n, neighborsBase, offsetsBase, degreeBase);
       dropmask &= (dropmask - 1);
     }
@@ -2592,21 +2512,11 @@ __device__ bool apply_include_branch_unsorted(int lane_id, int k, int lb, unsign
 
     const bool keep = active && !(row[v] < UNLINK2MORE) && isKplex3(v, k, PlexSz, neiInP, plex, n, neighborsBase, offsetsBase, degreeBase, adjList);
 
-    const unsigned activemask = __ballot_sync(0xFFFFFFFFu, active);
     const unsigned keepmask = __ballot_sync(0xFFFFFFFFu, keep);
-    unsigned dropmask = activemask ^ keepmask;
     const int keep_rank = __popc(keepmask & ((1u << lane_id) - 1));
     const int num_keep = __popc(keepmask);
 
     if (active && keep) excl[write + keep_rank] = v;
-
-    while(dropmask)
-    {
-      const int leader = __ffs(dropmask) - 1;
-      const unsigned vdrop = __shfl_sync(0xFFFFFFFFu, v, leader);
-      if (lane_id == 0) mask_clear_vertex(Xmask, vdrop);
-      dropmask &= (dropmask - 1);
-    }
 
     if (lane_id == 0)
     {
@@ -2624,42 +2534,32 @@ __device__ bool apply_include_branch_unsorted(int lane_id, int k, int lb, unsign
   return true;
 }
 
-__device__ bool enqueue_task_from_arrays(int lane_id, int task_idx, unsigned int n, unsigned int* plex, unsigned int PlexSz, unsigned int* cand, unsigned int CandSz, unsigned int* excl, unsigned int ExclSz, uint16_t* neiInG, uint16_t* neiInP, uint32_t* Pmask, uint32_t* Cmask, uint32_t* Xmask, Task* tasks, Task* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, uint32_t* d_all_Pmask, uint32_t* d_all_Cmask, uint32_t* d_all_Xmask, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint32_t* global_Pmask, uint32_t* global_Cmask, uint32_t* global_Xmask, uint16_t* global_neiInG, uint16_t* global_neiInP, int* abort, unsigned int* global_count)
+__device__ bool enqueue_task_from_arrays(int lane_id, int task_idx, unsigned int n, unsigned int* plex, unsigned int PlexSz, unsigned int* cand, unsigned int CandSz, unsigned int* excl, unsigned int ExclSz, uint16_t* neiInG, uint16_t* neiInP, Task* tasks, Task* global_tasks, unsigned int* tailPtr, unsigned int* global_tail, uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, int* abort, unsigned int* global_count)
 {
   Task* localTasks = tasks;
-  // uint8_t* labels = d_all_labels;
-  uint32_t* all_Pmask = d_all_Pmask;
-  uint32_t* all_Cmask = d_all_Cmask;
-  uint32_t* all_Xmask = d_all_Xmask;
-
+  uint8_t* labels = d_all_labels;
   uint16_t* all_neiInG = d_all_neiInG;
   uint16_t* all_neiInP = d_all_neiInP;
   unsigned int pos = 0;
 
-  if (!reserve_task_slot(lane_id, tasks, global_tasks, tailPtr, global_tail, d_all_Pmask, d_all_Cmask, d_all_Xmask, d_all_neiInG, d_all_neiInP, global_Pmask, global_Cmask, global_Xmask, global_neiInG, global_neiInP, abort, localTasks, all_Pmask, all_Cmask, all_Xmask, all_neiInG, all_neiInP, pos)) return false;
+  if (!reserve_task_slot(lane_id, tasks, global_tasks, tailPtr, global_tail, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, abort, localTasks, labels, all_neiInG, all_neiInP, pos)) return false;
 
-  // uint8_t* childLabels = labels + (size_t)pos * MAX_BLK_SIZE;
-  uint32_t* childPmask = all_Pmask + (size_t)pos * PCX_MASK_WORDS;
-  uint32_t* childCmask = all_Cmask + (size_t)pos * PCX_MASK_WORDS;
-  uint32_t* childXmask = all_Xmask + (size_t)pos * PCX_MASK_WORDS;
-
+  uint8_t* childLabels = labels + (size_t)pos * MAX_BLK_SIZE;
   uint16_t* childNeiInG = all_neiInG + (size_t)pos * MAX_BLK_SIZE;
   uint16_t* childNeiInP = all_neiInP + (size_t)pos * MAX_BLK_SIZE;
 
-  copy_pcx_masks(lane_id, Pmask, Cmask, Xmask, childPmask, childCmask, childXmask);
-
   for (unsigned int j = lane_id; j < n; j += 32)
   {
-    // childLabels[j] = U;
+    childLabels[j] = U;
     childNeiInG[j] = neiInG[j];
     childNeiInP[j] = neiInP[j];
   }
   __syncwarp();
 
-  // for (unsigned int j = lane_id; j < PlexSz; j += 32) childLabels[plex[j]] = P;
-  // for (unsigned int j = lane_id; j < CandSz; j += 32) childLabels[cand[j]] = C;
-  // for (unsigned int j = lane_id; j < ExclSz; j += 32) childLabels[excl[j]] = X;
-  // __syncwarp();
+  for (unsigned int j = lane_id; j < PlexSz; j += 32) childLabels[plex[j]] = P;
+  for (unsigned int j = lane_id; j < CandSz; j += 32) childLabels[cand[j]] = C;
+  for (unsigned int j = lane_id; j < ExclSz; j += 32) childLabels[excl[j]] = X;
+  __syncwarp();
 
   if (lane_id == 0)
   {
@@ -2668,11 +2568,7 @@ __device__ bool enqueue_task_from_arrays(int lane_id, int task_idx, unsigned int
     nt.PlexSz = PlexSz;
     nt.CandSz = CandSz;
     nt.ExclSz = ExclSz;
-    // nt.labels = childLabels;
-    nt.Pmask = childPmask;
-    nt.Cmask = childCmask;
-    nt.Xmask = childXmask;
-
+    nt.labels = childLabels;
     nt.neiInG = childNeiInG;
     nt.neiInP = childNeiInP;
     atomicAdd(&global_count[0], 1);
@@ -2681,16 +2577,12 @@ __device__ bool enqueue_task_from_arrays(int lane_id, int task_idx, unsigned int
   return true;
 }
 
-__global__ void rebaseTaskQueuePointers(Task* tasks, uint32_t* Pmask, uint32_t* Cmask, uint32_t* Xmask, uint16_t* neiInG, uint16_t* neiInP, unsigned int N)
+__global__ void rebaseTaskQueuePointers(Task* tasks, uint8_t* labels, uint16_t* neiInG, uint16_t* neiInP, unsigned int N)
 {
   unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
   if (tid >= N) return;
 
-  // tasks[tid].labels = labels + (size_t)tid * MAX_BLK_SIZE;
-  tasks[tid].Pmask = Pmask + (size_t)tid * PCX_MASK_WORDS;
-  tasks[tid].Cmask = Cmask + (size_t)tid * PCX_MASK_WORDS;
-  tasks[tid].Xmask = Xmask + (size_t)tid * PCX_MASK_WORDS;
-
+  tasks[tid].labels = labels + (size_t)tid * MAX_BLK_SIZE;
   tasks[tid].neiInG = neiInG + (size_t)tid * MAX_BLK_SIZE;
   tasks[tid].neiInP = neiInP + (size_t)tid * MAX_BLK_SIZE;
 }
@@ -2714,779 +2606,12 @@ __device__ int normalize_candidate_pivot(int lane_id, int pivot, unsigned int* c
   return __shfl_sync(0xFFFFFFFFu, normalized, 0);
 }
 
-#define PCX_MASK_WORDS ((MAX_BLK_SIZE + 31) / 32)
-
-__device__ __forceinline__ bool mask_has_vertex(const uint32_t* mask, int v)
-{
-  return v >= 0 && ((mask[v >> 5] >> (v & 31)) & 1u);
-}
-
-// __device__ void initializePCXWithMasks(int lane_id,
-//                                        const uint8_t* __restrict__ labelsBase,
-//                                        unsigned int n,
-//                                        unsigned int* __restrict__ plex,
-//                                        unsigned int* __restrict__ cand,
-//                                        unsigned int* __restrict__ excl,
-//                                        uint32_t* __restrict__ Pmask,
-//                                        uint32_t* __restrict__ Cmask,
-//                                        uint32_t* __restrict__ Xmask)
-
-// {
-//   const unsigned FULL = 0xFFFFFFFFu;
-
-//   for (int w = lane_id; w < PCX_MASK_WORDS; w += 32)
-//   {
-//     Pmask[w] = 0;
-//     Cmask[w] = 0;
-//     Xmask[w] = 0;
-//   }
-
-//   __syncwarp();
-
-//   int p_base = 0, c_base = 0, x_base = 0;
-
-//   for (int i0 = 0; i0 < n; i0 += 32)
-//   {
-//     const int i = i0 + lane_id;
-//     const uint8_t lbl = (i < n) ? labelsBase[i] : 0xFF;
-
-//     const unsigned p_mask = __ballot_sync(FULL, lbl == P);
-//     const unsigned c_mask = __ballot_sync(FULL, lbl == C);
-//     const unsigned x_mask = __ballot_sync(FULL, lbl == X);
-
-//     const int p_rank = __popc(p_mask & ((1u << lane_id) - 1));
-//     const int c_rank = __popc(c_mask & ((1u << lane_id) - 1));
-//     const int x_rank = __popc(x_mask & ((1u << lane_id) - 1));
-
-//     const int p_wbase = __shfl_sync(FULL, p_base, 0);
-//     const int c_wbase = __shfl_sync(FULL, c_base, 0);
-//     const int x_wbase = __shfl_sync(FULL, x_base, 0);
-
-//     if (lbl == P) plex[p_wbase + p_rank] = i;
-//     if (lbl == C) cand[c_wbase + c_rank] = i;
-//     if (lbl == X) excl[x_wbase + x_rank] = i;
-
-//     if (lane_id == 0)
-//     {
-//       const int word = i0 >> 5;
-//       Pmask[word] = p_mask;
-//       Cmask[word] = c_mask;
-//       Xmask[word] = x_mask;
-
-//       p_base += __popc(p_mask);
-//       c_base += __popc(c_mask);
-//       x_base += __popc(x_mask);
-//     }
-//   }
-//   __syncwarp();
-// }
-
-__device__ void initializePCXFromMasks(int lane_id, const uint32_t* __restrict__ Pmask, const uint32_t* __restrict__ Cmask, const uint32_t* __restrict__ Xmask, unsigned int n, unsigned int* __restrict__ plex, unsigned int* __restrict__ cand, unsigned int* __restrict__ excl)
-{
-  int p_base = 0;
-  int c_base = 0;
-  int x_base = 0;
-  const int words = (n + 31) >> 5;
-
-  for (int w = 0; w < words; w++)
-  {
-    uint32_t pword = 0;
-    uint32_t cword = 0;
-    uint32_t xword = 0;
-    if (lane_id == 0)
-    {
-      pword = Pmask[w];
-      cword = Cmask[w];
-      xword = Xmask[w];
-      const unsigned int rem = n & 31u;
-      if (w == words - 1 && rem != 0)
-      {
-        const uint32_t valid = (1u << rem) - 1u;
-        pword &= valid;
-        cword &= valid;
-        xword &= valid;
-      }
-    }
-    pword = __shfl_sync(0xFFFFFFFFu, pword, 0);
-    cword = __shfl_sync(0xFFFFFFFFu, cword, 0);
-    xword = __shfl_sync(0xFFFFFFFFu, xword, 0);
-
-    const uint32_t lane_bit = 1u << lane_id;
-    const uint32_t prior = lane_id == 0 ? 0u : ((1u << lane_id) - 1u);
-    const unsigned int v = (w << 5) + lane_id;
-
-    if (pword & lane_bit) plex[p_base + __popc(pword & prior)] = v;
-    if (cword & lane_bit) cand[c_base + __popc(cword & prior)] = v;
-    if (xword & lane_bit) excl[x_base + __popc(xword & prior)] = v;
-
-    p_base += __popc(pword);
-    c_base += __popc(cword);
-    x_base += __popc(xword);
-  }
-}
-
-// __device__ __forceinline__ bool local_adjacent(uint32_t* adjList, unsigned int n, int u, int v)
-// {
-//   const unsigned int bit = (unsigned int) u * n + (unsigned int)v;
-//   return ((adjList[bit >> 5] >> (bit & 31)) & 1u) != 0;
-// }
-
-
-__device__ void write_task_masks_from_arrays(int lane_id, unsigned int* plex, unsigned int PlexSz, unsigned int* cand, unsigned int CandSz, unsigned int* excl, unsigned int ExclSz, uint32_t* Pmask, uint32_t* Cmask, uint32_t* Xmask)
-{
-  for (int w = lane_id; w < PCX_MASK_WORDS; w += 32)
-  {
-    Pmask[w] = 0;
-    Cmask[w] = 0;
-    Xmask[w] = 0;
-  }
-  __syncwarp();
-
-  for (unsigned int j = lane_id; j < PlexSz; j += 32)
-  {
-    const unsigned int v = plex[j];
-    atomicOr(&Pmask[v >> 5], 1u << (v & 31));
-  }
-  for (unsigned int j = lane_id; j < CandSz; j += 32)
-  {
-    const unsigned int v = cand[j];
-    atomicOr(&Cmask[v >> 5], 1u << (v & 31));
-  }
-  for (unsigned int j = lane_id; j < ExclSz; j += 32)
-  {
-    const unsigned int v = excl[j];
-    atomicOr(&Xmask[v >> 5], 1u << (v & 31));
-  }
-  __syncwarp();
-}
-
-__device__ __forceinline__ bool better_min_g(int g, int v, int bestG, int bestV)
-{
-  return v != -1 && (g < bestG || (g == bestG && (bestV == -1 || v < bestV)));
-}
-
-__device__ __forceinline__ bool better_min_g_p(int g, int p, int v, int bestG, int bestP, int bestV)
-{
-  return v != -1 && (g < bestG || (g == bestG && p < bestP) || (g == bestG && p == bestP && (bestV == -1 || v < bestV)));
-}
-
-__device__ void reduce_min_g(int& bestG, int& bestV)
-{
-  for (int offset = 16; offset > 0; offset >>= 1)
-  {
-    const int otherG = __shfl_down_sync(0xFFFFFFFFu, bestG, offset);
-    const int otherV = __shfl_down_sync(0xFFFFFFFFu, bestV, offset);
-    if (better_min_g(otherG, otherV, bestG, bestV))
-    {
-      bestG = otherG;
-      bestV = otherV;
-    }
-  }
-
-  bestG = __shfl_sync(0xFFFFFFFFu, bestG, 0);
-  bestV = __shfl_sync(0xFFFFFFFFu, bestV, 0);
-}
-
-__device__ void reduce_min_g_p(int& bestG, int& bestP, int& bestV)
-{
-  for (int offset = 16; offset > 0; offset >>= 1)
-  {
-    const int otherG = __shfl_down_sync(0xFFFFFFFFu, bestG, offset);
-    const int otherP = __shfl_down_sync(0xFFFFFFFFu, bestP, offset);
-    const int otherV = __shfl_down_sync(0xFFFFFFFFu, bestV, offset);
-    if (better_min_g_p(otherG, otherP, otherV, bestG, bestP, bestV))
-    {
-      bestG = otherG;
-      bestP = otherP;
-      bestV = otherV;
-    }
-  }
-
-  bestG = __shfl_sync(0xFFFFFFFFu, bestG, 0);
-  bestP = __shfl_sync(0xFFFFFFFFu, bestP, 0);
-  bestV = __shfl_sync(0xFFFFFFFFu, bestV, 0);
-}
-
-__device__ void select_min_g_from_mask(int lane_id, unsigned int n, const uint32_t* mask, uint16_t* neiInG, int& bestG, int& bestV)
-{
-  bestG = INT_MAX;
-  bestV = -1;
-  const int words = (n + 31) >> 5;
-
-  for (int w = lane_id; w < words; w += 32)
-  {
-    uint32_t bits = mask[w];
-    while (bits)
-    {
-      const int bit = __ffs(bits) - 1;
-      const int v = (w << 5) + bit;
-      if (v < n && better_min_g(neiInG[v], v, bestG, bestV))
-      {
-        bestG = neiInG[v];
-        bestV = v;
-      }
-      bits &= bits - 1;
-    }
-  }
-  reduce_min_g(bestG, bestV);
-}
-
-__device__ void select_min_g_p_from_mask(int lane_id, unsigned int n, const uint32_t* mask, uint16_t* neiInG, uint16_t* neiInP, int& bestG, int& bestP, int& bestV)
-{
-  bestG = INT_MAX;
-  bestP = INT_MAX;
-  bestV = -1;
-  const int words = (n + 31) >> 5;
-
-  for (int w = lane_id; w < words; w += 32)
-  {
-    uint32_t bits = mask[w];
-    while (bits)
-    {
-      const int bit = __ffs(bits) - 1;
-      const int v = (w << 5) + bit;
-      if (v < n && better_min_g_p(neiInG[v], neiInP[v], v, bestG, bestP, bestV))
-      {
-        bestG = neiInG[v];
-        bestP = neiInP[v];
-        bestV = v;
-      }
-      bits &= bits - 1;
-    }
-  }
-
-  reduce_min_g_p(bestG, bestP, bestV);
-}
-
-__device__ void select_min_non_neighbor_g_p_from_cmask(int lane_id, unsigned int n, const uint32_t* Cmask, int pivot_plex, uint32_t* adjList, uint16_t* neiInG, uint16_t* neiInP, int& bestG, int& bestP, int& bestV)
-{
-  bestG = INT_MAX;
-  bestP = INT_MAX;
-  bestV = -1;
-  const int words = (n + 31) >> 5;
-
-  for (int w = lane_id; w < words; w += 32)
-  {
-    uint32_t bits = Cmask[w];
-    while(bits)
-    {
-      const int bit = __ffs(bits) - 1;
-      const int v = (w << 5) + bit;
-      if (v < n && !local_adjacent(adjList, n, v, pivot_plex) && better_min_g_p(neiInG[v], neiInP[v], v, bestG, bestP, bestV))
-      {
-        bestG = neiInG[v];
-        bestP = neiInP[v];
-        bestV = v;
-      }
-      bits &= bits - 1;
-    }
-  }
-
-  reduce_min_g_p(bestG, bestP, bestV);
-}
-
-__device__ bool has_kplex_pc_extension_from_mask(int lane_id, unsigned int n, const uint32_t* mask, int k, unsigned int totalSz, unsigned int PlexSz, unsigned int CandSz, uint16_t* missing, unsigned int* plex, unsigned int* cand, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase, uint32_t* adjList)
-{
-  bool found = false;
-  const int words = (n + 31) >> 5;
-
-  for (int w = lane_id; w < words; w += 32)
-  {
-    uint32_t bits = mask[w];
-    while(bits)
-    {
-      const int bit = __ffs(bits) - 1;
-      const int v = (w << 5) + bit;
-      if (v < n && isKplexPC2(v, k, totalSz, PlexSz, CandSz, missing, plex, cand, n, neighborsBase, offsetsBase, degreeBase, adjList))
-      {
-        found = true;
-      }
-      bits &= bits - 1;
-    }
-  }
-  return __any_sync(0xFFFFFFFFu, found);
-}
-
-__device__ int normalize_candidate_pivot_masked(int lane_id, int pivot, const uint32_t* Cmask, unsigned int* cand, unsigned int CandSz)
-{
-  int normalized = pivot;
-  if (lane_id == 0)
-  {
-    if (!mask_has_vertex(Cmask, pivot))
-    {
-      normalized = cand[CandSz - 1];
-    }
-  }
-  return __shfl_sync(0xFFFFFFFFu, normalized, 0);
-}
-
 // BNB with DFS Task strategy
-// __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsigned int* d_left, unsigned int* d_blk_counter, unsigned int* d_left_counter, uint8_t* commonMtx, Task* tasks, Task* outTasks, Task* global_tasks, unsigned int N, unsigned int head, unsigned int* tailPtr, unsigned int* global_tail, uint32_t* d_all_Pmask, uint32_t* d_all_Cmask, uint32_t* d_all_Xmask, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint32_t* global_Pmask, uint32_t* global_Cmask, uint32_t* global_Xmask, uint16_t* global_neiInG, uint16_t* global_neiInP, unsigned int* plex_count, uint16_t* d_bnb_neiInG, uint16_t* d_bnb_neiInP, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* abort, unsigned int* global_count)
-// { 
-//   unsigned int global_index = blockIdx.x * blockDim.x + threadIdx.x;
-//   unsigned int warp_id = (global_index / 32);
-//   unsigned int lane_id = threadIdx.x % 32;
-//   unsigned int local_warp_id = threadIdx.x >> 5;
-
-//   unsigned int task_pos = head + warp_id + WARPS * i;
-//   if (task_pos >= N) return;
-
-//   int k = p.k;
-//   int q = p.lb;
-//   Task t = tasks[task_pos];
-//   // uint8_t* labelsBase = t.labels;
-
-//   unsigned int* leftBase = d_left + t.idx * MAX_BLK_SIZE;
-//   uint16_t* neiInG = d_bnb_neiInG + warp_id * MAX_BLK_SIZE;
-//   uint16_t* neiInP = d_bnb_neiInP + warp_id * MAX_BLK_SIZE;
-//   unsigned int* left_count = d_left_counter + t.idx;
-//   unsigned int* local_n = d_blk_counter + t.idx;
-//   unsigned int PlexSz = t.PlexSz;
-//   unsigned int CandSz = t.CandSz;
-//   unsigned int ExclSz = t.ExclSz;
-
-//   size_t capacity = size_t(t.idx) * CAP;
-//   uint8_t* commonMtxBase = commonMtx + capacity;
-
-//   unsigned int* degreeBase = s.degree + t.idx * MAX_BLK_SIZE;
-//   unsigned int* l_degreeBase = s.l_degree + t.idx * MAX_BLK_SIZE;
-//   unsigned int* offsetsBase = s.offsets + t.idx * MAX_BLK_SIZE;
-//   unsigned int* neighborsBase = s.neighbors + t.idx * MAX_BLK_SIZE * AVG_DEGREE;
-//   unsigned int* l_offsetsBase = s.l_offsets + t.idx * MAX_BLK_SIZE;
-//   unsigned int* l_neighborsBase = s.l_neighbors + t.idx * MAX_BLK_SIZE * AVG_LEFT_DEGREE;
-
-//   unsigned int* plex = s.PB + warp_id * MAX_BLK_SIZE;
-//   unsigned int* cand = s.CB + warp_id * MAX_BLK_SIZE;
-//   unsigned int* excl = s.XB + warp_id * MAX_BLK_SIZE;
-
-//   uint16_t* local_sat = d_sat + warp_id * MAX_BLK_SIZE;
-//   uint16_t* local_commons = d_commons + warp_id * MAX_BLK_SIZE;
-//   uint32_t* local_uni = d_uni + warp_id * 32;
-
-//   uint32_t* adjList = d_adj + t.idx * ADJSIZE;
-
-//   __shared__ uint32_t sh_Pmask[WARPS_EACH_BLK * PCX_MASK_WORDS];
-//   __shared__ uint32_t sh_Cmask[WARPS_EACH_BLK * PCX_MASK_WORDS];
-//   __shared__ uint32_t sh_Xmask[WARPS_EACH_BLK * PCX_MASK_WORDS];
-//   uint32_t* Pmask = sh_Pmask + local_warp_id * PCX_MASK_WORDS;
-//   uint32_t* Cmask = sh_Cmask + local_warp_id * PCX_MASK_WORDS;
-//   uint32_t* Xmask = sh_Xmask + local_warp_id * PCX_MASK_WORDS;
-
-//   unsigned int n;
-//   if (lane_id == 0) n = local_n[0];
-//   n = __shfl_sync(0xFFFFFFFF, n, 0);
-
-//   for (unsigned int j = lane_id; j < n; j += 32)
-//   {
-//     neiInG[j] = t.neiInG[j];
-//     neiInP[j] = t.neiInP[j];
-//   }
-
-//   copy_pcx_masks(lane_id, t.Pmask, t.Cmask, t.Xmask, Pmask, Cmask, Xmask);
-//   initializePCXFromMasks(lane_id, Pmask, Cmask, Xmask, n, plex, cand, excl);
-  
-//   // initializePCX(lane_id, labelsBase, n, plex, cand, excl);
-//   // initializePCXWithMasks(lane_id, labelsBase, n, plex, cand, excl, Pmask, Cmask, Xmask);
-//   __syncwarp();
-
-//   // LocalDfsFrame* stack_frames = reinterpret_cast<LocalDfsFrame*>(outTasks) + (size_t)warp_id * LOCAL_DFS_FRAME_BYTES;
-//   // uint8_t* stack_bytes0 = d_all_labels;
-//   // uint16_t* stack_bytes1 = d_all_neiInG;
-//   // uint16_t* stack_bytes2 = d_all_neiInP;
-//   // unsigned int stack_top = 0;
-//   // unsigned int depth = 0;
-
-//   for (int local_step = 0; local_step < p.local_bnb_steps; local_step++)
-//   {
-
-//     if (abort[0]) return;
-
-//     if (PlexSz + CandSz < q) return;
-
-//     // if (PlexSz + CandSz < q)
-//     // {
-//     //   if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
-//     //   continue;
-//     // }
-      
-//     if (CandSz == 0)
-//     {
-//       __syncwarp();
-//       if (ExclSz == 0 && PlexSz >= q &&
-//           isMaximal_opt(lane_id, k, PlexSz, leftBase, left_count[0], l_neighborsBase, l_offsetsBase, l_degreeBase, neiInP, neighborsBase, offsetsBase, degreeBase, plex, n, local_sat, local_commons, local_uni))
-//       {
-//         if(lane_id == 0) atomicAdd(&plex_count[0], 1);
-//       }
-//       return;
-//       // if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
-//       // continue;
-//     }
-//     __syncwarp();
-//     // build_pcx_masks(lane_id, plex, PlexSz, cand, CandSz, excl, ExclSz, Pmask, Cmask, Xmask);
-
-//     // if (depth >= local_bnb_steps)
-//     // {
-//     //   if (!enqueue_global_task_from_arrays(lane_id, t.idx, n, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, global_tasks, global_tail, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
-//     //   if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
-//     //   continue;
-//     // }
-    
-      
-//     int minnei_Plex = INT_MAX;
-//     int pivot = -1;
-//     int minnei_Cand = INT_MAX;
-
-//     // for (int i = lane_id; i < PlexSz; i+=32)
-//     // {
-//     //   const int v = plex[i];
-//     //   if (neiInG[v] < minnei_Plex)
-//     //   {
-//     //     minnei_Plex = neiInG[v];
-//     //     pivot = v;
-//     //   }
-//     // }
-
-      
-
-//     // for (int offset = 16; offset > 0; offset >>= 1)
-//     // {
-//     //   int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei_Plex, offset);
-//     //   int otherIdx = __shfl_down_sync(0xFFFFFFFF, pivot, offset);
-//     //   if (otherMin < minnei_Plex || (otherMin == minnei_Plex && otherIdx < pivot))
-//     //   {
-//     //     minnei_Plex = otherMin;
-//     //     pivot = otherIdx;
-//     //   }
-//     // }
-
-//     // minnei_Plex = __shfl_sync(0xFFFFFFFF, minnei_Plex, 0);
-//     // pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
-
-//     select_min_g_from_mask(lane_id, n, Pmask, neiInG, minnei_Plex, pivot);
-
-//     int pivot_plex = pivot;
-      
-//     if (minnei_Plex + k  < max(q, PlexSz)) return;
-//     // if (minnei_Plex + k < max(q, (int)PlexSz))
-//     // {
-//     //   if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
-//     //   continue;
-//     // }
-      
-//     if (minnei_Plex + k < PlexSz + CandSz)
-//     {     
-//       minnei_Cand = INT_MAX;
-//       int minnei_CandP = INT_MAX;
-//       pivot = -1;
-//       // for (int i = lane_id; i < CandSz; i+=32)
-//       // {
-//       //   const int v = cand[i];
-//       //   int check = v * n + pivot_plex;
-//       //   if (!((adjList[check >> 5] >> (check & 31)) & 1u))
-//       //   {
-//       //     if (neiInG[v] < minnei_Cand)
-//       //     {
-//       //       minnei_Cand = neiInG[v];
-//       //       pivot = v;
-//       //     }
-//       //     else if (neiInG[v] == minnei_Cand && neiInP[pivot] > neiInP[v])
-//       //     {
-//       //       pivot = v;
-//       //     }
-//       //   }
-//       // }
-          
-//       // for (int offset = 16; offset > 0; offset >>= 1)
-//       // {
-//       //   int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei_Cand, offset);
-//       //   int otherIdx = __shfl_down_sync(0xFFFFFFFF, pivot, offset);
-//       //   if (otherMin < minnei_Cand || (otherMin == minnei_Cand && otherIdx != -1 && neiInP[pivot] > neiInP[otherIdx]))
-//       //   {
-//       //     minnei_Cand = otherMin;
-//       //     pivot = otherIdx;
-//       //   }
-//       // }
-
-//       // minnei_Cand = __shfl_sync(0xFFFFFFFF, minnei_Cand, 0);
-//       // pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
-
-//       select_min_non_neighbor_g_p_from_cmask(lane_id, n, Cmask, pivot_plex, adjList, neiInG, neiInP, minnei_Cand, minnei_CandP, pivot);
-
-//       if (pivot == -1)
-//       {
-//         pivot = cand[CandSz - 1];
-//       }
-
-//       // if (stack_top >= LOCAL_DFS_STACK_FRAMES)
-//       // {
-//       //   if (!enqueue_global_task_from_arrays(lane_id, t.idx, n, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, global_tasks, global_tail, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
-//       //   if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
-//       //   continue;
-//       // }
-          
-//       if (!enqueue_exclude_task_from_arrays(lane_id, t.idx, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, Pmask, Cmask, Xmask, neighborsBase, offsetsBase, degreeBase, outTasks, global_tasks, tailPtr, global_tail, d_all_Pmask, d_all_Cmask, d_all_Xmask, d_all_neiInG, d_all_neiInP, global_Pmask, global_Cmask, global_Xmask, global_neiInG, global_neiInP, abort, global_count)) return;
-//       // if (!push_exclude_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, depth + 1, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, abort)) return;
-
-//       if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, Pmask, Cmask, Xmask, neiInP, neiInG, pivot, adjList)) return;
-//       // if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, pivot, adjList))
-//       // {
-//       //   depth++;
-//       // }
-//       // else if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
-//       continue;
-//     }
-    
-//     int minnei = minnei_Plex;
-//     int candMinG = INT_MAX;
-//     int candMinP = INT_MAX;
-//     int candPivot = -1;
-
-//     select_min_g_p_from_mask(lane_id, n, Cmask, neiInG, neiInP, candMinG, candMinP, candPivot);
-//     if (better_min_g_p(candMinG, candMinP, candPivot, minnei, (pivot == -1 ? INT_MAX : neiInP[pivot]), pivot))
-//     {
-//       minnei = candMinG;
-//       pivot = candPivot;
-//     }
-
-//     // for (int i = lane_id; i < CandSz; i+=32)
-//     // {
-//     //   const int v = cand[i];
-//     //   if (neiInG[v] < minnei)
-//     //   {
-//     //     minnei = neiInG[v];
-//     //     pivot = v;
-//     //   }
-//     //   else if (neiInG[v] == minnei && neiInP[pivot] > neiInP[v])
-//     //   {
-//     //     pivot = v;
-//     //   }
-//     // }
-
-//     // for(int offset = 16; offset > 0; offset >>= 1)
-//     // {
-//     //   int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei, offset);
-//     //   int otherIdx = __shfl_down_sync(0xFFFFFFFF, pivot, offset);
-
-//     //   if (otherMin < minnei || (otherMin == minnei && otherIdx != -1 && neiInP[pivot] > neiInP[otherIdx]))
-//     //   {
-//     //     minnei = otherMin;
-//     //     pivot = otherIdx;
-//     //   }
-//     // }
-//     // minnei = __shfl_sync(0xFFFFFFFF, minnei, 0);
-//     // pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
-//     if (minnei >= (PlexSz + CandSz - k))
-//     {
-//       if (PlexSz + CandSz < q) return;
-//       // if (PlexSz + CandSz < q)
-//       // {
-//       //   if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
-//       //   continue;
-//       // }
-//       bool flag = false;
-          
-//       for (int i = lane_id; i < ExclSz; i+=32)
-//       {
-//         const int v = excl[i];
-//         if (isKplexPC2(v, k, PlexSz+CandSz, PlexSz, CandSz, neiInG, plex, cand, n, neighborsBase, offsetsBase, degreeBase, adjList))
-//         {
-//           flag = true;
-//         }
-//       }
-          
-//       if (__any_sync(0xFFFFFFFF, flag)) return;
-//       // if (__any_sync(0xFFFFFFFFu, flag))
-//       // {
-//       //   if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
-//       //   continue;
-//       // }
-          
-//       if (isMaximalPC_opt(lane_id, k, PlexSz, CandSz, PlexSz+CandSz, leftBase, left_count[0], l_neighborsBase, l_offsetsBase, l_degreeBase, neiInG, neighborsBase, offsetsBase, degreeBase, plex, cand, n, local_sat, local_commons, local_uni))
-//       {
-//         if (lane_id == 0) atomicAdd(&plex_count[0], 1);
-//       }
-          
-//       return;
-//       // if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
-//       // continue;
-//     }
-
-//     // pivot = normalize_candidate_pivot(lane_id, pivot, cand, CandSz);
-
-//     // if (stack_top >= LOCAL_DFS_STACK_FRAMES)
-//     // {
-//     //   if(!enqueue_global_task_from_arrays(lane_id, t.idx, n, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, global_tasks, global_tail, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
-//     //   if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
-//     //   continue;
-//     // }
-
-//     // if (!push_exclude_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, depth + 1, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, abort)) return;
-
-//     // if (apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, pivot, adjList))
-//     // {
-//     //   depth++;
-//     // }
-//     // else if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
-
-//     if (!enqueue_exclude_task_from_arrays(lane_id, t.idx, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, Pmask, Cmask, Xmask, neighborsBase, offsetsBase, degreeBase, outTasks, global_tasks, tailPtr, global_tail, d_all_Pmask, d_all_Cmask, d_all_Xmask, d_all_neiInG, d_all_neiInP, global_Pmask, global_Cmask, global_Xmask, global_neiInG, global_neiInP, abort, global_count)) return;
-//     if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, Pmask, Cmask, Xmask, neiInP, neiInG, pivot, adjList)) return;
-//   }
-
-//   if (PlexSz + CandSz < q) return;
-//   if (!enqueue_task_from_arrays(lane_id, t.idx, n, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, Pmask, Cmask, Xmask, outTasks, global_tasks, tailPtr, global_tail, d_all_Pmask, d_all_Cmask, d_all_Xmask, d_all_neiInG, d_all_neiInP, global_Pmask, global_Cmask, global_Xmask, global_neiInG, global_neiInP, abort, global_count)) return;
-//   __syncwarp();
-// }
-
-__device__ __forceinline__ bool better_drop_pivot(int drop, int g, int v, int bestDrop, int bestG, int bestV)
-{
-  return v != -1 && (drop > bestDrop || (drop == bestDrop && better_min_g(g, v, bestG, bestV)));
-}
-
-__device__ void select_pivot_drop(int lane_id, unsigned int n, const uint32_t* Cmask, const uint32_t* dropBase, uint16_t* neiInG, int& bestDrop, int& bestG, int& bestV)
-{
-  bestDrop = -1;
-  bestG = INT_MAX;
-  bestV = -1;
-  const int words = (n + 31) >> 5;
-
-  for (int pivotWord = 0; pivotWord < words; pivotWord++)
-  {
-    uint32_t pivotBits = (lane_id == 0) ? Cmask[pivotWord] : 0;
-    pivotBits = __shfl_sync(0xFFFFFFFFu, pivotBits, 0);
-
-    while (pivotBits)
-    {
-      const int pivotBit = __ffs(pivotBits) - 1;
-      const int v = (pivotWord << 5) + pivotBit;
-
-      if (v < n)
-      {
-        // const uint8_t* row = commonMtx + (size_t) v * n;
-        const uint32_t* dropRow = dropBase + (size_t)v * PCX_MASK_WORDS;
-        int laneDrop = 0;
-
-        for (int w = lane_id; w < words; w += 32)
-        {
-          uint32_t bits = dropRow[w] & Cmask[w];
-          if (w == pivotWord) bits &= ~(1u << pivotBit);
-          laneDrop += __popc(bits);
-          // while (bits)
-          // {
-          //   const int bit = __ffs(bits) - 1;
-          //   const int u = (w << 5) + bit;
-          //   if (u < n && row[u] < UNLINK2EQUAL) laneDrop++;
-          //   bits &= bits - 1;
-          // }
-        }
-        int drop = laneDrop;
-        for (int offset = 16; offset > 0; offset >>= 1)
-        {
-          drop += __shfl_down_sync(0xFFFFFFFFu, drop, offset);
-        }
-        drop = __shfl_sync(0xFFFFFFFFu, drop, 0);
-
-        if (lane_id == 0 && better_drop_pivot(drop, neiInG[v], v, bestDrop, bestG, bestV))
-        {
-          bestDrop = drop;
-          bestG = neiInG[v];
-          bestV = v;
-        }
-      }
-
-      pivotBits &= pivotBits - 1;
-    }
-  }
-
-  bestDrop = __shfl_sync(0xFFFFFFFFu, bestDrop, 0);
-  bestG = __shfl_sync(0xFFFFFFFFu, bestG, 0);
-  bestV = __shfl_sync(0xFFFFFFFFu, bestV, 0);
-}
-
-__device__ void select_pivot_drop2(int lane_id, unsigned int n, const uint32_t* Cmask, const uint32_t* dropBase, int refP, uint16_t* neiInG, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase, int& bestDrop, int& bestG, int& bestV)
-{
-  bestDrop = -1;
-  bestG = INT_MAX;
-  bestV = -1;
-  const int words = (n + 31) >> 5;
-
-  if (refP == -1) return;
-
-  for (unsigned int ni = 0; ni < degreeBase[refP]; ni++)
-  {
-    const int v = neighborsBase[offsetsBase[refP] + ni];
-    if (v >= n || !mask_has_vertex(Cmask, v)) continue;
-
-    const int pivotWord = v >> 5;
-    const int pivotBit = v & 31;
-    const uint32_t* dropRow = dropBase + (size_t)v * PCX_MASK_WORDS;
-    int laneDrop = 0;
-
-    for (int w = lane_id; w < words; w += 32)
-    {
-      uint32_t bits = dropRow[w] & Cmask[w];
-      if (w == pivotWord) bits &= ~(1u << pivotBit);
-      laneDrop += __popc(bits);
-    }
-
-    int drop = laneDrop;
-    for (int offset = 16; offset > 0; offset >>= 1)
-    {
-      drop += __shfl_down_sync(0xFFFFFFFFu, drop, offset);
-    }
-    drop = __shfl_sync(0xFFFFFFFFu, drop, 0);
-
-    if (lane_id == 0 && better_drop_pivot(drop, neiInG[v], v, bestDrop, bestG, bestV))
-    {
-      bestDrop = drop;
-      bestG = neiInG[v];
-      bestV = v;
-    }
-  }
-
-  bestDrop = __shfl_sync(0xFFFFFFFFu, bestDrop, 0);
-  bestG = __shfl_sync(0xFFFFFFFFu, bestG, 0);
-  bestV = __shfl_sync(0xFFFFFFFFu, bestV, 0);
-}
-
-// __device__ void select_pivot_drop2(
-//     int lane_id,
-//     unsigned int n,
-//     const uint32_t* Cmask,
-//     int refP,
-//     uint16_t* neiInG,
-//     unsigned int* neighborsBase,
-//     unsigned int* offsetsBase,
-//     unsigned int* degreeBase,
-//     int& bestG,
-//     int& bestV)
-// {
-//   bestG = INT_MAX;
-//   bestV = -1;
-
-//   if (refP == -1) return;
-
-//   for (unsigned int ni = lane_id; ni < degreeBase[refP]; ni += 32)
-//   {
-//     const int v = neighborsBase[offsetsBase[refP] + ni];
-
-//     if (v < n && mask_has_vertex(Cmask, v) &&
-//         better_min_g(neiInG[v], v, bestG, bestV))
-//     {
-//       bestG = neiInG[v];
-//       bestV = v;
-//     }
-//   }
-
-//   reduce_min_g(bestG, bestV);
-// }
-
-// BNB DFS + pivot score
-__global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsigned int* d_left, unsigned int* d_blk_counter, unsigned int* d_left_counter, uint8_t* commonMtx, uint32_t* d_drop, Task* tasks, Task* outTasks, Task* global_tasks, unsigned int N, unsigned int head, unsigned int* tailPtr, unsigned int* global_tail, uint32_t* d_all_Pmask, uint32_t* d_all_Cmask, uint32_t* d_all_Xmask, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint32_t* global_Pmask, uint32_t* global_Cmask, uint32_t* global_Xmask, uint16_t* global_neiInG, uint16_t* global_neiInP, unsigned int* plex_count, uint16_t* d_bnb_neiInG, uint16_t* d_bnb_neiInP, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* abort, unsigned int* global_count)
+__global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsigned int* d_left, unsigned int* d_blk_counter, unsigned int* d_left_counter, uint8_t* commonMtx, Task* tasks, Task* outTasks, Task* global_tasks, unsigned int N, unsigned int head, unsigned int* tailPtr, unsigned int* global_tail, uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, unsigned int* plex_count, uint16_t* d_bnb_neiInG, uint16_t* d_bnb_neiInP, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* abort, unsigned int* global_count)
 { 
   unsigned int global_index = blockIdx.x * blockDim.x + threadIdx.x;
   unsigned int warp_id = (global_index / 32);
   unsigned int lane_id = threadIdx.x % 32;
-  unsigned int local_warp_id = threadIdx.x >> 5;
 
   unsigned int task_pos = head + warp_id + WARPS * i;
   if (task_pos >= N) return;
@@ -3494,7 +2619,7 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
   int k = p.k;
   int q = p.lb;
   Task t = tasks[task_pos];
-  // uint8_t* labelsBase = t.labels;
+  uint8_t* labelsBase = t.labels;
 
   unsigned int* leftBase = d_left + t.idx * MAX_BLK_SIZE;
   uint16_t* neiInG = d_bnb_neiInG + warp_id * MAX_BLK_SIZE;
@@ -3524,14 +2649,6 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
   uint32_t* local_uni = d_uni + warp_id * 32;
 
   uint32_t* adjList = d_adj + t.idx * ADJSIZE;
-  uint32_t* dropBase = d_drop + t.idx * ADJSIZE;
-
-  __shared__ uint32_t sh_Pmask[WARPS_EACH_BLK * PCX_MASK_WORDS];
-  __shared__ uint32_t sh_Cmask[WARPS_EACH_BLK * PCX_MASK_WORDS];
-  __shared__ uint32_t sh_Xmask[WARPS_EACH_BLK * PCX_MASK_WORDS];
-  uint32_t* Pmask = sh_Pmask + local_warp_id * PCX_MASK_WORDS;
-  uint32_t* Cmask = sh_Cmask + local_warp_id * PCX_MASK_WORDS;
-  uint32_t* Xmask = sh_Xmask + local_warp_id * PCX_MASK_WORDS;
 
   unsigned int n;
   if (lane_id == 0) n = local_n[0];
@@ -3542,12 +2659,8 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
     neiInG[j] = t.neiInG[j];
     neiInP[j] = t.neiInP[j];
   }
-
-  copy_pcx_masks(lane_id, t.Pmask, t.Cmask, t.Xmask, Pmask, Cmask, Xmask);
-  initializePCXFromMasks(lane_id, Pmask, Cmask, Xmask, n, plex, cand, excl);
   
-  // initializePCX(lane_id, labelsBase, n, plex, cand, excl);
-  // initializePCXWithMasks(lane_id, labelsBase, n, plex, cand, excl, Pmask, Cmask, Xmask);
+  initializePCX(lane_id, labelsBase, n, plex, cand, excl);
   __syncwarp();
 
   // LocalDfsFrame* stack_frames = reinterpret_cast<LocalDfsFrame*>(outTasks) + (size_t)warp_id * LOCAL_DFS_FRAME_BYTES;
@@ -3583,7 +2696,6 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
       // continue;
     }
     __syncwarp();
-    // build_pcx_masks(lane_id, plex, PlexSz, cand, CandSz, excl, ExclSz, Pmask, Cmask, Xmask);
 
     // if (depth >= local_bnb_steps)
     // {
@@ -3594,174 +2706,133 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
     
       
     int minnei_Plex = INT_MAX;
-    int plexPivot = -1;
-    // int minnei_Cand = INT_MAX;
+    int pivot = -1;
+    int minnei_Cand = INT_MAX;
 
-    // for (int i = lane_id; i < PlexSz; i+=32)
-    // {
-    //   const int v = plex[i];
-    //   if (neiInG[v] < minnei_Plex)
-    //   {
-    //     minnei_Plex = neiInG[v];
-    //     pivot = v;
-    //   }
-    // }
+    for (int i = lane_id; i < PlexSz; i+=32)
+    {
+      const int v = plex[i];
+      if (neiInG[v] < minnei_Plex)
+      {
+        minnei_Plex = neiInG[v];
+        pivot = v;
+      }
+    }
 
       
 
-    // for (int offset = 16; offset > 0; offset >>= 1)
-    // {
-    //   int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei_Plex, offset);
-    //   int otherIdx = __shfl_down_sync(0xFFFFFFFF, pivot, offset);
-    //   if (otherMin < minnei_Plex || (otherMin == minnei_Plex && otherIdx < pivot))
-    //   {
-    //     minnei_Plex = otherMin;
-    //     pivot = otherIdx;
-    //   }
-    // }
+    for (int offset = 16; offset > 0; offset >>= 1)
+    {
+      int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei_Plex, offset);
+      int otherIdx = __shfl_down_sync(0xFFFFFFFF, pivot, offset);
+      if (otherMin < minnei_Plex || (otherMin == minnei_Plex && otherIdx < pivot))
+      {
+        minnei_Plex = otherMin;
+        pivot = otherIdx;
+      }
+    }
 
-    // minnei_Plex = __shfl_sync(0xFFFFFFFF, minnei_Plex, 0);
-    // pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
+    minnei_Plex = __shfl_sync(0xFFFFFFFF, minnei_Plex, 0);
+    pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
 
-    select_min_g_from_mask(lane_id, n, Pmask, neiInG, minnei_Plex, plexPivot);
-
-    // int pivot_plex = pivot;
+    int pivot_plex = pivot;
       
     if (minnei_Plex + k  < max(q, PlexSz)) return;
-
-    // if (lane_id == 0) printf("plex pivot in warp %d has slack %d\n", warp_id, minnei_Plex + k - max(q, PlexSz));
-
-    // unsigned int slack = minnei_Plex + k - max(q, PlexSz);
-    // if (lane_id == 0)
-    // {
-    //   int count = 0;
-    //   if (slack == 0)
-    //   {
-    //     for (int i = 0; i < PlexSz; i++)
-    //     {
-    //       unsigned int v = plex[i];
-    //       if (neiInG[v] == minnei_Plex)
-    //       {
-    //         count++;
-    //       }
-    //     }
-    //     printf("Nodes with same slack are %d\n", count);
-    //   }
-    // }
-
     // if (minnei_Plex + k < max(q, (int)PlexSz))
     // {
     //   if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
     //   continue;
     // }
       
-    // if (minnei_Plex + k < PlexSz + CandSz)
-    // {     
-    //   minnei_Cand = INT_MAX;
-    //   int minnei_CandP = INT_MAX;
-    //   pivot = -1;
-    //   // for (int i = lane_id; i < CandSz; i+=32)
-    //   // {
-    //   //   const int v = cand[i];
-    //   //   int check = v * n + pivot_plex;
-    //   //   if (!((adjList[check >> 5] >> (check & 31)) & 1u))
-    //   //   {
-    //   //     if (neiInG[v] < minnei_Cand)
-    //   //     {
-    //   //       minnei_Cand = neiInG[v];
-    //   //       pivot = v;
-    //   //     }
-    //   //     else if (neiInG[v] == minnei_Cand && neiInP[pivot] > neiInP[v])
-    //   //     {
-    //   //       pivot = v;
-    //   //     }
-    //   //   }
-    //   // }
+    if (minnei_Plex + k < PlexSz + CandSz)
+    {     
+      minnei_Cand = INT_MAX;
+      pivot = -1;
+      for (int i = lane_id; i < CandSz; i+=32)
+      {
+        const int v = cand[i];
+        int check = v * n + pivot_plex;
+        if (!((adjList[check >> 5] >> (check & 31)) & 1u))
+        {
+          if (neiInG[v] < minnei_Cand)
+          {
+            minnei_Cand = neiInG[v];
+            pivot = v;
+          }
+          else if (neiInG[v] == minnei_Cand && neiInP[pivot] > neiInP[v])
+          {
+            pivot = v;
+          }
+        }
+      }
           
-    //   // for (int offset = 16; offset > 0; offset >>= 1)
-    //   // {
-    //   //   int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei_Cand, offset);
-    //   //   int otherIdx = __shfl_down_sync(0xFFFFFFFF, pivot, offset);
-    //   //   if (otherMin < minnei_Cand || (otherMin == minnei_Cand && otherIdx != -1 && neiInP[pivot] > neiInP[otherIdx]))
-    //   //   {
-    //   //     minnei_Cand = otherMin;
-    //   //     pivot = otherIdx;
-    //   //   }
-    //   // }
+      for (int offset = 16; offset > 0; offset >>= 1)
+      {
+        int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei_Cand, offset);
+        int otherIdx = __shfl_down_sync(0xFFFFFFFF, pivot, offset);
+        if (otherMin < minnei_Cand || (otherMin == minnei_Cand && otherIdx != -1 && neiInP[pivot] > neiInP[otherIdx]))
+        {
+          minnei_Cand = otherMin;
+          pivot = otherIdx;
+        }
+      }
 
-    //   // minnei_Cand = __shfl_sync(0xFFFFFFFF, minnei_Cand, 0);
-    //   // pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
+      minnei_Cand = __shfl_sync(0xFFFFFFFF, minnei_Cand, 0);
+      pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
 
-    //   select_min_non_neighbor_g_p_from_cmask(lane_id, n, Cmask, pivot_plex, adjList, neiInG, neiInP, minnei_Cand, minnei_CandP, pivot);
+      if (pivot == -1)
+      {
+        pivot = cand[CandSz - 1];
+      }
 
-    //   if (pivot == -1)
-    //   {
-    //     pivot = cand[CandSz - 1];
-    //   }
-
-    //   // if (stack_top >= LOCAL_DFS_STACK_FRAMES)
-    //   // {
-    //   //   if (!enqueue_global_task_from_arrays(lane_id, t.idx, n, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, global_tasks, global_tail, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
-    //   //   if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
-    //   //   continue;
-    //   // }
+      // if (stack_top >= LOCAL_DFS_STACK_FRAMES)
+      // {
+      //   if (!enqueue_global_task_from_arrays(lane_id, t.idx, n, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, global_tasks, global_tail, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
+      //   if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
+      //   continue;
+      // }
           
-    //   if (!enqueue_exclude_task_from_arrays(lane_id, t.idx, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, Pmask, Cmask, Xmask, neighborsBase, offsetsBase, degreeBase, outTasks, global_tasks, tailPtr, global_tail, d_all_Pmask, d_all_Cmask, d_all_Xmask, d_all_neiInG, d_all_neiInP, global_Pmask, global_Cmask, global_Xmask, global_neiInG, global_neiInP, abort, global_count)) return;
-    //   // if (!push_exclude_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, depth + 1, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, abort)) return;
+      if (!enqueue_exclude_task_from_arrays(lane_id, t.idx, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, outTasks, global_tasks, tailPtr, global_tail, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
+      // if (!push_exclude_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, depth + 1, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, abort)) return;
 
-    //   if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, Pmask, Cmask, Xmask, neiInP, neiInG, pivot, adjList)) return;
-    //   // if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, pivot, adjList))
-    //   // {
-    //   //   depth++;
-    //   // }
-    //   // else if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
-    //   continue;
-    // }
+      if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, pivot, adjList)) return;
+      // if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, pivot, adjList))
+      // {
+      //   depth++;
+      // }
+      // else if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
+      continue;
+    }
     
-    // int minnei = minnei_Plex;
-    // int candMinG = INT_MAX;
-    // int candMinP = INT_MAX;
-    // int candPivot = -1;
+    int minnei = minnei_Plex;
 
-    // select_min_g_p_from_mask(lane_id, n, Cmask, neiInG, neiInP, candMinG, candMinP, candPivot);
-    // if (better_min_g_p(candMinG, candMinP, candPivot, minnei, (pivot == -1 ? INT_MAX : neiInP[pivot]), pivot))
-    // {
-    //   minnei = candMinG;
-    //   pivot = candPivot;
-    // }
+    for (int i = lane_id; i < CandSz; i+=32)
+    {
+      const int v = cand[i];
+      if (neiInG[v] < minnei)
+      {
+        minnei = neiInG[v];
+        pivot = v;
+      }
+      else if (neiInG[v] == minnei && neiInP[pivot] > neiInP[v])
+      {
+        pivot = v;
+      }
+    }
 
-    int minnei_Cand = INT_MAX;
-    int candPivot = -1;
-    select_min_g_from_mask(lane_id, n, Cmask, neiInG, minnei_Cand, candPivot);
+    for(int offset = 16; offset > 0; offset >>= 1)
+    {
+      int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei, offset);
+      int otherIdx = __shfl_down_sync(0xFFFFFFFF, pivot, offset);
 
-    // for (int i = lane_id; i < CandSz; i+=32)
-    // {
-    //   const int v = cand[i];
-    //   if (neiInG[v] < minnei)
-    //   {
-    //     minnei = neiInG[v];
-    //     pivot = v;
-    //   }
-    //   else if (neiInG[v] == minnei && neiInP[pivot] > neiInP[v])
-    //   {
-    //     pivot = v;
-    //   }
-    // }
-
-    // for(int offset = 16; offset > 0; offset >>= 1)
-    // {
-    //   int otherMin = __shfl_down_sync(0xFFFFFFFF, minnei, offset);
-    //   int otherIdx = __shfl_down_sync(0xFFFFFFFF, pivot, offset);
-
-    //   if (otherMin < minnei || (otherMin == minnei && otherIdx != -1 && neiInP[pivot] > neiInP[otherIdx]))
-    //   {
-    //     minnei = otherMin;
-    //     pivot = otherIdx;
-    //   }
-    // }
-    // minnei = __shfl_sync(0xFFFFFFFF, minnei, 0);
-    // pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
-    int minnei = min(minnei_Plex, minnei_Cand);
+      if (otherMin < minnei || (otherMin == minnei && otherIdx != -1 && neiInP[pivot] > neiInP[otherIdx]))
+      {
+        minnei = otherMin;
+        pivot = otherIdx;
+      }
+    }
+    minnei = __shfl_sync(0xFFFFFFFF, minnei, 0);
+    pivot = __shfl_sync(0xFFFFFFFF, pivot, 0);
     if (minnei >= (PlexSz + CandSz - k))
     {
       if (PlexSz + CandSz < q) return;
@@ -3815,44 +2886,12 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
     // }
     // else if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
 
-    int dropScore = -1;
-    int dropPivot = INT_MAX;
-    int pivot = -1;
-    select_pivot_drop(lane_id, n, Cmask, dropBase, neiInG, dropScore, dropPivot, pivot);
-    // select_pivot_drop2(lane_id, n, Cmask, dropBase, plexPivot, neiInG, neighborsBase, offsetsBase, degreeBase, dropScore, dropPivot, pivot);
-    int neighborMinG = INT_MAX;
-
-    // select_pivot_drop2(
-    //     lane_id,
-    //     n,
-    //     Cmask,
-    //     plexPivot,        // node in P with min slack / min neiInG
-    //     neiInG,
-    //     neighborsBase,
-    //     offsetsBase,
-    //     degreeBase,
-    //     neighborMinG,
-    //     pivot);
-
-    if (pivot == -1)
-    {
-      pivot = candPivot;  // fallback: min neiInG in C
-    }
-    // if (dropScore <= 0 || pivot == -1)
-    // {
-    //   pivot = candPivot;
-    // }
-    // if (pivot == -1)
-    // {
-    //   pivot = cand[CandSz - 1];
-    // }
-
-    if (!enqueue_exclude_task_from_arrays(lane_id, t.idx, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, Pmask, Cmask, Xmask, neighborsBase, offsetsBase, degreeBase, outTasks, global_tasks, tailPtr, global_tail, d_all_Pmask, d_all_Cmask, d_all_Xmask, d_all_neiInG, d_all_neiInP, global_Pmask, global_Cmask, global_Xmask, global_neiInG, global_neiInP, abort, global_count)) return;
-    if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, Pmask, Cmask, Xmask, neiInP, neiInG, pivot, adjList)) return;
+    if (!enqueue_exclude_task_from_arrays(lane_id, t.idx, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, outTasks, global_tasks, tailPtr, global_tail, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
+    if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, pivot, adjList)) return;
   }
 
   if (PlexSz + CandSz < q) return;
-  if (!enqueue_task_from_arrays(lane_id, t.idx, n, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, Pmask, Cmask, Xmask, outTasks, global_tasks, tailPtr, global_tail, d_all_Pmask, d_all_Cmask, d_all_Xmask, d_all_neiInG, d_all_neiInP, global_Pmask, global_Cmask, global_Xmask, global_neiInG, global_neiInP, abort, global_count)) return;
+  if (!enqueue_task_from_arrays(lane_id, t.idx, n, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, outTasks, global_tasks, tailPtr, global_tail, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
   __syncwarp();
 }
 
@@ -5586,16 +4625,7 @@ __device__ int commonEle(int i, int j, unsigned int* neighborsBase, unsigned int
 
 }
 
-__device__ __forceinline__ void mark_drop_pair(uint32_t* dropBase, int i, int j, uint8_t value)
-{
-  if (value < UNLINK2EQUAL)
-  {
-    dropBase[(size_t)i * PCX_MASK_WORDS + (j >> 5)] |= 1u << (j & 31);
-    atomicOr(&dropBase[(size_t)j * PCX_MASK_WORDS + (i >> 5)], 1u << (i & 31));
-  }
-}
-
-__global__ void buildCommonMtx(int idx, P_pointers p, S_pointers s, G_pointers g, uint8_t* commonMtx, unsigned int* d_hopSz, uint32_t* d_drop)
+__global__ void buildCommonMtx(int idx, P_pointers p, S_pointers s, G_pointers g, uint8_t* commonMtx, unsigned int* d_hopSz)
 {
   unsigned int global_index = blockIdx.x * blockDim.x + threadIdx.x;
   unsigned int warp_id = (global_index / 32);
@@ -5615,7 +4645,6 @@ __global__ void buildCommonMtx(int idx, P_pointers p, S_pointers s, G_pointers g
   // uint8_t* commonMtxBase = commonMtx + warp_id * CAP;
   size_t capacity = size_t(warp_id) * CAP;
   uint8_t* commonMtxBase = commonMtx + capacity;
-  uint32_t* dropBase = d_drop + (size_t)warp_id * ADJSIZE;
   const int thresPP1=lb-k-2*max(k-2,0),thresPP2=lb-k-2*max(k-3,0);
   const int thresPC1=lb-2*k-max(k-2,0),thresPC2=lb-k-1-max(k-2,0)-max(k-3,0);
   const int thresCC1=lb-2*k-(k-1),thresCC2=lb-2*k+2-(k-1);
@@ -5647,7 +4676,6 @@ __global__ void buildCommonMtx(int idx, P_pointers p, S_pointers s, G_pointers g
         else commonMtxBase[i*n+j]=UNLINK2LESS;
       }
       commonMtxBase[j*n+i] = commonMtxBase[i*n+j];
-      mark_drop_pair(dropBase, i, j, commonMtxBase[i*n+j]);
     }
   }
   for (int i = hop+lane_id; i < n;i+=32)
@@ -5667,17 +4695,8 @@ __global__ void buildCommonMtx(int idx, P_pointers p, S_pointers s, G_pointers g
         else commonMtxBase[i*n+j]=UNLINK2LESS;
       }
       commonMtxBase[j*n+i]=commonMtxBase[i*n+j];
-      mark_drop_pair(dropBase, i, j, commonMtxBase[i*n+j]);
     }
-    // if (k==2) continue;
-    if (k == 2)
-    {
-      for (int j = hop; j < i; j++)
-      {
-        mark_drop_pair(dropBase, i, j, commonMtxBase[i*n+j]);
-      }
-      continue;
-    }
+    if (k==2) continue;
     for (int j = hop; j<i; j++)
     {
       const int common = commonEle(i, j, neighborsBase, offsetsBase, degreeHop);
@@ -5693,7 +4712,6 @@ __global__ void buildCommonMtx(int idx, P_pointers p, S_pointers s, G_pointers g
         else commonMtxBase[i*n+j]=UNLINK2LESS;
       }
       commonMtxBase[j*n+i]=commonMtxBase[i*n+j];
-      mark_drop_pair(dropBase, i, j, commonMtxBase[i*n+j]);
     }
   }
 
@@ -5881,40 +4899,37 @@ __global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_poi
           pos = __shfl_sync(0xFFFFFFFF, pos, 0);
           // if (lane_id == 0) printf("pos: %d, max_cap: %d\n", pos, MAX_CAP/4);
           
-          uint32_t* newPmask = t.d_all_Pmask_A + (size_t)pos * PCX_MASK_WORDS;
-          uint32_t* newCmask = t.d_all_Cmask_A + (size_t)pos * PCX_MASK_WORDS;
-          uint32_t* newXmask = t.d_all_Xmask_A + (size_t)pos * PCX_MASK_WORDS;
-          // uint8_t* newLabels = t.d_all_labels_A + pos * MAX_BLK_SIZE;
+
+          uint8_t* newLabels = t.d_all_labels_A + pos * MAX_BLK_SIZE;
           uint16_t* newNeiInG = t.d_all_neiInG_A + pos * MAX_BLK_SIZE;
           uint16_t* newNeiInP = t.d_all_neiInP_A + pos * MAX_BLK_SIZE;
           for (int i = lane_id; i < n; i+=32)
           {
-            // newLabels[i] = U;
+            newLabels[i] = U;
             newNeiInG[i] = neiInGBase[i];
             newNeiInP[i] = neiInPBase[i];
           }
-          // for (int i = lane_id; i < PlexSz[0]; i+=32)
-          // {
-          //   const int v = plex[i];
-          //   newLabels[v] = P;
-          // }
-          // for (int i = lane_id; i < Cand1Sz[0]; i+=32)
-          // {
-          //   const int v = cand1[i];
-          //   newLabels[v] = C;
-          // }
-          // for (int i = lane_id; i < Cand2Sz[0]; i+=32)
-          // {
-          //   const int v = cand2[i];
-          //   newLabels[v] = H;
-          // }
-          // for (int i = lane_id; i < ExclSz[0]; i+=32)
-          // {
-          //   const int v = excl[i];
-          //   newLabels[v] = X;
-          // }
+          for (int i = lane_id; i < PlexSz[0]; i+=32)
+          {
+            const int v = plex[i];
+            newLabels[v] = P;
+          }
+          for (int i = lane_id; i < Cand1Sz[0]; i+=32)
+          {
+            const int v = cand1[i];
+            newLabels[v] = C;
+          }
+          for (int i = lane_id; i < Cand2Sz[0]; i+=32)
+          {
+            const int v = cand2[i];
+            newLabels[v] = H;
+          }
+          for (int i = lane_id; i < ExclSz[0]; i+=32)
+          {
+            const int v = excl[i];
+            newLabels[v] = X;
+          }
 
-          write_task_masks_from_arrays(lane_id, plex, PlexSz[0], cand1, Cand1Sz[0], excl, ExclSz[0], newPmask, newCmask, newXmask);
           
           __syncwarp();
           if (lane_id == 0)
@@ -5924,13 +4939,10 @@ __global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_poi
             nt.PlexSz = PlexSz[0];
             nt.CandSz = Cand1Sz[0];
             nt.ExclSz = ExclSz[0];
-            nt.Pmask = newPmask;
-            nt.Cmask = newCmask;
-            nt.Xmask = newXmask;
-            // nt.labels = newLabels;
+            nt.labels = newLabels;
             nt.neiInG = newNeiInG;
             nt.neiInP = newNeiInP;
-            // atomicAdd(&global_count[0], 1);
+            atomicAdd(&global_count[0], 1);
           // __syncwarp();
           // if (warp_id == 0)
           // {
@@ -6190,41 +5202,36 @@ __global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_poi
           // if (lane_id == 0) printf("pos: %d, max_cap: %d\n", pos, MAX_CAP/4);
           
           size_t baseOff = (size_t)pos * (size_t)MAX_BLK_SIZE;
-          // uint8_t* newLabels = t.d_all_labels_A + baseOff;
-          uint32_t* newPmask = t.d_all_Pmask_A + (size_t)pos * PCX_MASK_WORDS;
-          uint32_t* newCmask = t.d_all_Cmask_A + (size_t)pos * PCX_MASK_WORDS;
-          uint32_t* newXmask = t.d_all_Xmask_A + (size_t)pos * PCX_MASK_WORDS;
-
+          uint8_t* newLabels = t.d_all_labels_A + baseOff;
           uint16_t* newNeiInG = t.d_all_neiInG_A + baseOff;
           uint16_t* newNeiInP = t.d_all_neiInP_A + baseOff;
           for (int i = lane_id; i < n; i+=32)
           {
-            // newLabels[i] = U;
+            newLabels[i] = U;
             newNeiInG[i] = neiInGBase[i];
             int temp = neiInPBase[i];
             newNeiInP[i] = temp;
           }
-          // for (int i = lane_id; i < PlexSz[0]; i+=32)
-          // {
-          //   const int v = plex[i];
-          //   newLabels[v] = P;
-          // }
-          // for (int i = lane_id; i < Cand1Sz[0]; i+=32)
-          // {
-          //   const int v = cand1[i];
-          //   newLabels[v] = C;
-          // }
-          // for (int i = lane_id; i < Cand2Sz[0]; i+=32)
-          // {
-          //   const int v = cand2[i];
-          //   newLabels[v] = H;
-          // }
-          // for (int i = lane_id; i < ExclSz[0]; i+=32)
-          // {
-          //   const int v = excl[i];
-          //   newLabels[v] = X;
-          // }
-          write_task_masks_from_arrays(lane_id, plex, PlexSz[0], cand1, Cand1Sz[0], excl, ExclSz[0], newPmask, newCmask, newXmask);
+          for (int i = lane_id; i < PlexSz[0]; i+=32)
+          {
+            const int v = plex[i];
+            newLabels[v] = P;
+          }
+          for (int i = lane_id; i < Cand1Sz[0]; i+=32)
+          {
+            const int v = cand1[i];
+            newLabels[v] = C;
+          }
+          for (int i = lane_id; i < Cand2Sz[0]; i+=32)
+          {
+            const int v = cand2[i];
+            newLabels[v] = H;
+          }
+          for (int i = lane_id; i < ExclSz[0]; i+=32)
+          {
+            const int v = excl[i];
+            newLabels[v] = X;
+          }
           __syncwarp();
           // if (warp_id == 0 && lane_id == 0)
           // {
@@ -6244,13 +5251,10 @@ __global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_poi
             nt.PlexSz = PlexSz[0];
             nt.CandSz = Cand1Sz[0];
             nt.ExclSz = ExclSz[0];
-            nt.Pmask = newPmask;
-            nt.Cmask = newCmask;
-            nt.Xmask = newXmask;
-            // nt.labels = newLabels;
+            nt.labels = newLabels;
             nt.neiInG = newNeiInG;
             nt.neiInP = newNeiInP;
-            // atomicAdd(&global_count[0], 1);
+            atomicAdd(&global_count[0], 1);
           }
           __syncwarp();
 
