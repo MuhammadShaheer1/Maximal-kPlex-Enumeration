@@ -25,6 +25,23 @@ __device__ bool binary_search(unsigned int node, unsigned int *buffer, unsigned 
   return (lo < len) && (buffer[lo] == node);
 }
 
+__device__ __forceinline__ uint32_t* local_adj_row(uint32_t* adjList, unsigned int u)
+{
+  return adjList + (size_t)u * PCX_MASK_WORDS;
+}
+
+__device__ __forceinline__ void local_adj_set(uint32_t* adjList, unsigned int u, unsigned int v)
+{
+  atomicOr(&local_adj_row(adjList, u)[v >> 5], 1u << (v & 31));
+}
+
+__device__ __forceinline__ bool local_adjacent(uint32_t* adjList, unsigned int n, unsigned int u, unsigned int v)
+{
+  return ((local_adj_row(adjList, (unsigned int)u)[(unsigned int)v >> 5] >> ((unsigned int)v & 31)) & 1u);
+}
+
+
+
 __global__ void decompose(int i, P_pointers p, G_pointers g, D_pointers d, unsigned int *d_blk, unsigned int *d_blk_counter, unsigned int *d_left, unsigned int *d_left_counter, uint32_t *visited, unsigned int *global_count, unsigned int *left_count, unsigned int *validblk, unsigned int* d_hopSz, unsigned long long* cycles)
 {
   unsigned int global_index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -420,9 +437,11 @@ __global__ void fillNeighbors(int i, S_pointers s, P_pointers p, G_pointers g, u
       if (binary_search(nei, g.neighbors+g.offsets[origin], g.degree[origin]))
       {
         int v = idx*counter+j;
-        int v2 = j*counter + idx;
-        atomicOr(&adjList[v >> 5], 1u << (v & 31));
-        atomicOr(&adjList[v2 >> 5], 1u << (v2 & 31));
+        // int v2 = j*counter + idx;
+        // atomicOr(&adjList[v >> 5], 1u << (v & 31));
+        // atomicOr(&adjList[v2 >> 5], 1u << (v2 & 31));
+        local_adj_set(adjList, idx, j);
+        local_adj_set(adjList, j, idx);
         commonMtxBase[v] = 1;
         neighborsBase[offset+cnt] = j;
         cnt++;
@@ -577,7 +596,8 @@ __device__ bool isKplex2(int lane_id, int v, int k, unsigned int PlexSz, uint16_
   {
     const int u = plex[i];
     int check = u * n + v;
-    if (neiInP[u] + k == PlexSz && !((adjList[check >> 5] >> (check & 31)) & 1u)) localPass = false;
+    // if (neiInP[u] + k == PlexSz && !((adjList[check >> 5] >> (check & 31)) & 1u)) localPass = false;
+    if (neiInP[u] + k == PlexSz && !local_adjacent(adjList, n, u, v)) localPass = false;
   }
   if (__any_sync(mask, !localPass)) return false;
   return true;
@@ -593,7 +613,8 @@ __device__ bool isKplex3(int v, int k, unsigned int PlexSz, uint16_t* neiInP, un
   {
     const int u = plex[i];
     int check = u * n + v;
-    if (neiInP[u] + k == PlexSz && !((adjList[check >> 5] >> (check & 31)) & 1u)) return false;
+    // if (neiInP[u] + k == PlexSz && !((adjList[check >> 5] >> (check & 31)) & 1u)) return false;
+    if (neiInP[u] + k == PlexSz && !local_adjacent(adjList, n, u, v)) return false;
   }
   return true;
 }
@@ -608,14 +629,16 @@ __device__ bool isKplexPC2(int v, int k, unsigned int totalSz, unsigned int Plex
   {
     const int u = plex[i];
     int check = u * n + v;
-    if (missing[u] + k == (totalSz) && !((adjList[check >> 5] >> (check & 31)) & 1u))
+    // if (missing[u] + k == (totalSz) && !((adjList[check >> 5] >> (check & 31)) & 1u))
+    if (missing[u] + k == (totalSz) && !local_adjacent(adjList, n, u, v))
         return false;
   }
   for (int i = 0; i < CandSz; i++)
   {
     const int u = cand[i];
     int check = u * n + v;
-    if (missing[u] + k == (totalSz) && !((adjList[check >> 5] >> (check & 31)) & 1u))
+    // if (missing[u] + k == (totalSz) && !((adjList[check >> 5] >> (check & 31)) & 1u))
+    if (missing[u] + k == (totalSz) && !local_adjacent(adjList, n, u, v))
         return false;
   }
   return true;
@@ -2802,11 +2825,12 @@ __device__ void initializePCXFromMasks(int lane_id, const uint32_t* __restrict__
   }
 }
 
-__device__ __forceinline__ bool local_adjacent(uint32_t* adjList, unsigned int n, int u, int v)
-{
-  const unsigned int bit = (unsigned int) u * n + (unsigned int)v;
-  return ((adjList[bit >> 5] >> (bit & 31)) & 1u) != 0;
-}
+// __device__ __forceinline__ bool local_adjacent(uint32_t* adjList, unsigned int n, int u, int v)
+// {
+//   const unsigned int bit = (unsigned int) u * n + (unsigned int)v;
+//   return ((adjList[bit >> 5] >> (bit & 31)) & 1u) != 0;
+// }
+
 
 __device__ void write_task_masks_from_arrays(int lane_id, unsigned int* plex, unsigned int PlexSz, unsigned int* cand, unsigned int CandSz, unsigned int* excl, unsigned int ExclSz, uint32_t* Pmask, uint32_t* Cmask, uint32_t* Xmask)
 {
@@ -3378,83 +3402,83 @@ __device__ void select_pivot_drop(int lane_id, unsigned int n, const uint32_t* C
   bestV = __shfl_sync(0xFFFFFFFFu, bestV, 0);
 }
 
-// __device__ void select_pivot_drop2(int lane_id, unsigned int n, const uint32_t* Cmask, const uint32_t* dropBase, int refP, uint16_t* neiInG, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase, int& bestDrop, int& bestG, int& bestV)
-// {
-//   bestDrop = -1;
-//   bestG = INT_MAX;
-//   bestV = -1;
-//   const int words = (n + 31) >> 5;
-
-//   if (refP == -1) return;
-
-//   for (unsigned int ni = 0; ni < degreeBase[refP]; ni++)
-//   {
-//     const int v = neighborsBase[offsetsBase[refP] + ni];
-//     if (v >= n || !mask_has_vertex(Cmask, v)) continue;
-
-//     const int pivotWord = v >> 5;
-//     const int pivotBit = v & 31;
-//     const uint32_t* dropRow = dropBase + (size_t)v * PCX_MASK_WORDS;
-//     int laneDrop = 0;
-
-//     for (int w = lane_id; w < words; w += 32)
-//     {
-//       uint32_t bits = dropRow[w] & Cmask[w];
-//       if (w == pivotWord) bits &= ~(1u << pivotBit);
-//       laneDrop += __popc(bits);
-//     }
-
-//     int drop = laneDrop;
-//     for (int offset = 16; offset > 0; offset >>= 1)
-//     {
-//       drop += __shfl_down_sync(0xFFFFFFFFu, drop, offset);
-//     }
-//     drop = __shfl_sync(0xFFFFFFFFu, drop, 0);
-
-//     if (lane_id == 0 && better_drop_pivot(drop, neiInG[v], v, bestDrop, bestG, bestV))
-//     {
-//       bestDrop = drop;
-//       bestG = neiInG[v];
-//       bestV = v;
-//     }
-//   }
-
-//   bestDrop = __shfl_sync(0xFFFFFFFFu, bestDrop, 0);
-//   bestG = __shfl_sync(0xFFFFFFFFu, bestG, 0);
-//   bestV = __shfl_sync(0xFFFFFFFFu, bestV, 0);
-// }
-
-__device__ void select_pivot_drop2(
-    int lane_id,
-    unsigned int n,
-    const uint32_t* Cmask,
-    int refP,
-    uint16_t* neiInG,
-    unsigned int* neighborsBase,
-    unsigned int* offsetsBase,
-    unsigned int* degreeBase,
-    int& bestG,
-    int& bestV)
+__device__ void select_pivot_drop2(int lane_id, unsigned int n, const uint32_t* Cmask, const uint32_t* dropBase, int refP, uint16_t* neiInG, unsigned int* neighborsBase, unsigned int* offsetsBase, unsigned int* degreeBase, int& bestDrop, int& bestG, int& bestV)
 {
+  bestDrop = -1;
   bestG = INT_MAX;
   bestV = -1;
+  const int words = (n + 31) >> 5;
 
   if (refP == -1) return;
 
-  for (unsigned int ni = lane_id; ni < degreeBase[refP]; ni += 32)
+  for (unsigned int ni = 0; ni < degreeBase[refP]; ni++)
   {
     const int v = neighborsBase[offsetsBase[refP] + ni];
+    if (v >= n || !mask_has_vertex(Cmask, v)) continue;
 
-    if (v < n && mask_has_vertex(Cmask, v) &&
-        better_min_g(neiInG[v], v, bestG, bestV))
+    const int pivotWord = v >> 5;
+    const int pivotBit = v & 31;
+    const uint32_t* dropRow = dropBase + (size_t)v * PCX_MASK_WORDS;
+    int laneDrop = 0;
+
+    for (int w = lane_id; w < words; w += 32)
     {
+      uint32_t bits = dropRow[w] & Cmask[w];
+      if (w == pivotWord) bits &= ~(1u << pivotBit);
+      laneDrop += __popc(bits);
+    }
+
+    int drop = laneDrop;
+    for (int offset = 16; offset > 0; offset >>= 1)
+    {
+      drop += __shfl_down_sync(0xFFFFFFFFu, drop, offset);
+    }
+    drop = __shfl_sync(0xFFFFFFFFu, drop, 0);
+
+    if (lane_id == 0 && better_drop_pivot(drop, neiInG[v], v, bestDrop, bestG, bestV))
+    {
+      bestDrop = drop;
       bestG = neiInG[v];
       bestV = v;
     }
   }
 
-  reduce_min_g(bestG, bestV);
+  bestDrop = __shfl_sync(0xFFFFFFFFu, bestDrop, 0);
+  bestG = __shfl_sync(0xFFFFFFFFu, bestG, 0);
+  bestV = __shfl_sync(0xFFFFFFFFu, bestV, 0);
 }
+
+// __device__ void select_pivot_drop2(
+//     int lane_id,
+//     unsigned int n,
+//     const uint32_t* Cmask,
+//     int refP,
+//     uint16_t* neiInG,
+//     unsigned int* neighborsBase,
+//     unsigned int* offsetsBase,
+//     unsigned int* degreeBase,
+//     int& bestG,
+//     int& bestV)
+// {
+//   bestG = INT_MAX;
+//   bestV = -1;
+
+//   if (refP == -1) return;
+
+//   for (unsigned int ni = lane_id; ni < degreeBase[refP]; ni += 32)
+//   {
+//     const int v = neighborsBase[offsetsBase[refP] + ni];
+
+//     if (v < n && mask_has_vertex(Cmask, v) &&
+//         better_min_g(neiInG[v], v, bestG, bestV))
+//     {
+//       bestG = neiInG[v];
+//       bestV = v;
+//     }
+//   }
+
+//   reduce_min_g(bestG, bestV);
+// }
 
 // BNB DFS + pivot score
 __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsigned int* d_left, unsigned int* d_blk_counter, unsigned int* d_left_counter, uint8_t* commonMtx, uint32_t* d_drop, Task* tasks, Task* outTasks, Task* global_tasks, unsigned int N, unsigned int head, unsigned int* tailPtr, unsigned int* global_tail, uint32_t* d_all_Pmask, uint32_t* d_all_Cmask, uint32_t* d_all_Xmask, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint32_t* global_Pmask, uint32_t* global_Cmask, uint32_t* global_Xmask, uint16_t* global_neiInG, uint16_t* global_neiInP, unsigned int* plex_count, uint16_t* d_bnb_neiInG, uint16_t* d_bnb_neiInP, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* abort, unsigned int* global_count)
@@ -3794,21 +3818,21 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
     int dropScore = -1;
     int dropPivot = INT_MAX;
     int pivot = -1;
-    // select_pivot_drop(lane_id, n, Cmask, dropBase, neiInG, dropScore, dropPivot, pivot);
+    select_pivot_drop(lane_id, n, Cmask, dropBase, neiInG, dropScore, dropPivot, pivot);
     // select_pivot_drop2(lane_id, n, Cmask, dropBase, plexPivot, neiInG, neighborsBase, offsetsBase, degreeBase, dropScore, dropPivot, pivot);
     int neighborMinG = INT_MAX;
 
-    select_pivot_drop2(
-        lane_id,
-        n,
-        Cmask,
-        plexPivot,        // node in P with min slack / min neiInG
-        neiInG,
-        neighborsBase,
-        offsetsBase,
-        degreeBase,
-        neighborMinG,
-        pivot);
+    // select_pivot_drop2(
+    //     lane_id,
+    //     n,
+    //     Cmask,
+    //     plexPivot,        // node in P with min slack / min neiInG
+    //     neiInG,
+    //     neighborsBase,
+    //     offsetsBase,
+    //     degreeBase,
+    //     neighborMinG,
+    //     pivot);
 
     if (pivot == -1)
     {
