@@ -2606,12 +2606,136 @@ __device__ int normalize_candidate_pivot(int lane_id, int pivot, unsigned int* c
   return __shfl_sync(0xFFFFFFFFu, normalized, 0);
 }
 
+__device__ __forceinline__ bool better_pressure_pivot(int score, int g, int p, int v, int bestScore, int bestG, int bestP, int bestV)
+{
+  return v != -1 &&
+         (score > bestScore ||
+          (score == bestScore && g < bestG) ||
+          (score == bestScore && g == bestG && p < bestP) ||
+          (score == bestScore && g == bestG && p == bestP && (bestV == -1 || v < bestV)));
+}
+
+#define PRESSURE_PIVOT_P_COUNT 5
+
+__device__ __forceinline__ bool better_pressure_source(int pressure, int g, int v, int bestPressure, int bestG, int bestV)
+{
+  return v != -1 &&
+         (pressure > bestPressure ||
+          (pressure == bestPressure && g < bestG) ||
+          (pressure == bestPressure && g == bestG && (bestV == -1 || v < bestV)));
+}
+
+__device__ void build_pressure_p_vertices(int lane_id, int k, unsigned int totalSz, unsigned int* plex, unsigned int PlexSz, uint16_t* neiInG, int* pressureP, int* pressureW)
+{
+  if (lane_id == 0)
+  {
+    int bestPressure[PRESSURE_PIVOT_P_COUNT];
+    int bestG[PRESSURE_PIVOT_P_COUNT];
+    int bestV[PRESSURE_PIVOT_P_COUNT];
+
+    for (int s = 0; s < PRESSURE_PIVOT_P_COUNT; s++)
+    {
+      bestPressure[s] = INT_MIN;
+      bestG[s] = INT_MAX;
+      bestV[s] = -1;
+    }
+
+    for (unsigned int i = 0; i < PlexSz; i++)
+    {
+      const int u = plex[i];
+      const int g = neiInG[u];
+      const int pressure = (int)totalSz - (g + k);
+
+      for (int s = 0; s < PRESSURE_PIVOT_P_COUNT; s++)
+      {
+        if (better_pressure_source(pressure, g, u, bestPressure[s], bestG[s], bestV[s]))
+        {
+          for (int t = PRESSURE_PIVOT_P_COUNT - 1; t > s; t--)
+          {
+            bestPressure[t] = bestPressure[t - 1];
+            bestG[t] = bestG[t - 1];
+            bestV[t] = bestV[t - 1];
+          }
+          bestPressure[s] = pressure;
+          bestG[s] = g;
+          bestV[s] = u;
+          break;
+        }
+      }
+    }
+
+    for (int s = 0; s < PRESSURE_PIVOT_P_COUNT; s++)
+    {
+      pressureP[s] = bestV[s];
+      pressureW[s] = bestV[s] == -1 ? 0 : max(1, bestPressure[s]);
+    }
+  }
+  __syncwarp();
+}
+
+__device__ void select_pressure_pivot_from_plex(int lane_id, int k, unsigned int totalSz, unsigned int n, unsigned int* plex, unsigned int PlexSz, unsigned int* cand, unsigned int CandSz, const uint32_t* adjList, uint16_t* neiInG, uint16_t* neiInP, int* pressureP, int* pressureW, int& bestScore, int& bestG, int& bestP, int& bestV)
+{
+  build_pressure_p_vertices(lane_id, k, totalSz, plex, PlexSz, neiInG, pressureP, pressureW);
+
+  bestScore = -1;
+  bestG = INT_MAX;
+  bestP = INT_MAX;
+  bestV = -1;
+
+  for (unsigned int i = lane_id; i < CandSz; i += 32)
+  {
+    const int v = cand[i];
+    int score = 0;
+
+    for (int s = 0; s < PRESSURE_PIVOT_P_COUNT; s++)
+    {
+      const int u = pressureP[s];
+      int check = v * n + u;
+      if (!((adjList[check >> 5] >> (check & 31)) & 1u))
+      // if (u != -1 && !local_adjacent(adjList, n, v, u))
+      {
+        score += pressureW[s];
+      }
+    }
+
+    if (better_pressure_pivot(score, neiInG[v], neiInP[v], v, bestScore, bestG, bestP, bestV))
+    {
+      bestScore = score;
+      bestG = neiInG[v];
+      bestP = neiInP[v];
+      bestV = v;
+    }
+  }
+
+  for (int offset = 16; offset > 0; offset >>= 1)
+  {
+    const int otherScore = __shfl_down_sync(0xFFFFFFFFu, bestScore, offset);
+    const int otherG = __shfl_down_sync(0xFFFFFFFFu, bestG, offset);
+    const int otherP = __shfl_down_sync(0xFFFFFFFFu, bestP, offset);
+    const int otherV = __shfl_down_sync(0xFFFFFFFFu, bestV, offset);
+
+    if (better_pressure_pivot(otherScore, otherG, otherP, otherV, bestScore, bestG, bestP, bestV))
+    {
+      bestScore = otherScore;
+      bestG = otherG;
+      bestP = otherP;
+      bestV = otherV;
+    }
+  }
+
+  bestScore = __shfl_sync(0xFFFFFFFFu, bestScore, 0);
+  bestG = __shfl_sync(0xFFFFFFFFu, bestG, 0);
+  bestP = __shfl_sync(0xFFFFFFFFu, bestP, 0);
+  bestV = __shfl_sync(0xFFFFFFFFu, bestV, 0);
+}
+
 // BNB with DFS Task strategy
 __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsigned int* d_left, unsigned int* d_blk_counter, unsigned int* d_left_counter, uint8_t* commonMtx, Task* tasks, Task* outTasks, Task* global_tasks, unsigned int N, unsigned int head, unsigned int* tailPtr, unsigned int* global_tail, uint8_t* d_all_labels, uint16_t* d_all_neiInG, uint16_t* d_all_neiInP, uint8_t* global_labels, uint16_t* global_neiInG, uint16_t* global_neiInP, unsigned int* plex_count, uint16_t* d_bnb_neiInG, uint16_t* d_bnb_neiInP, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* abort, unsigned int* global_count)
 { 
   unsigned int global_index = blockIdx.x * blockDim.x + threadIdx.x;
   unsigned int warp_id = (global_index / 32);
   unsigned int lane_id = threadIdx.x % 32;
+  unsigned int local_warp_id = threadIdx.x >> 5;
 
   unsigned int task_pos = head + warp_id + WARPS * i;
   if (task_pos >= N) return;
@@ -2649,6 +2773,12 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
   uint32_t* local_uni = d_uni + warp_id * 32;
 
   uint32_t* adjList = d_adj + t.idx * ADJSIZE;
+
+  // __shared__ int sh_pressureP[WARPS_EACH_BLK * PRESSURE_PIVOT_P_COUNT];
+  // __shared__ int sh_pressureW[WARPS_EACH_BLK * PRESSURE_PIVOT_P_COUNT];
+
+  // int* pressureP = sh_pressureP + local_warp_id * PRESSURE_PIVOT_P_COUNT;
+  // int* pressureW = sh_pressureW + local_warp_id * PRESSURE_PIVOT_P_COUNT;
 
   unsigned int n;
   if (lane_id == 0) n = local_n[0];
@@ -2785,6 +2915,19 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
         pivot = cand[CandSz - 1];
       }
 
+
+      // int pivotScore = -1;
+      // int pivotG = INT_MAX;
+      // int pivotP = INT_MAX;
+      // pivot = -1;
+
+      // select_pressure_pivot_from_plex(lane_id, k, PlexSz + CandSz, n, plex, PlexSz, cand, CandSz, adjList, neiInG, neiInP, pressureP, pressureW, pivotScore, pivotG, pivotP, pivot);
+
+      // if (pivot == -1)
+      // {
+      //   pivot = cand[CandSz - 1];
+      // }
+
       // if (stack_top >= LOCAL_DFS_STACK_FRAMES)
       // {
       //   if (!enqueue_global_task_from_arrays(lane_id, t.idx, n, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, global_tasks, global_tail, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
@@ -2885,6 +3028,18 @@ __global__ void BNB(int i, P_pointers p, S_pointers s, unsigned int* d_blk, unsi
     //   depth++;
     // }
     // else if (!pop_local_dfs_snapshot(warp_id, lane_id, stack_top, stack_frames, stack_bytes0, stack_bytes1, stack_bytes2, n, depth, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP)) return;
+
+    // int pivotScore = -1;
+    // int pivotG = INT_MAX;
+    // int pivotP = INT_MAX;
+    //   pivot = -1;
+
+    //   select_pressure_pivot_from_plex(lane_id, k, PlexSz + CandSz, n, plex, PlexSz, cand, CandSz, adjList, neiInG, neiInP, pressureP, pressureW, pivotScore, pivotG, pivotP, pivot);
+
+    //   if (pivot == -1)
+    //   {
+    //     pivot = cand[CandSz - 1];
+    //   }
 
     if (!enqueue_exclude_task_from_arrays(lane_id, t.idx, n, pivot, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInG, neiInP, neighborsBase, offsetsBase, degreeBase, outTasks, global_tasks, tailPtr, global_tail, d_all_labels, d_all_neiInG, d_all_neiInP, global_labels, global_neiInG, global_neiInP, abort, global_count)) return;
     if (!apply_include_branch_unsorted(lane_id, k, q, n, neighborsBase, offsetsBase, degreeBase, commonMtxBase, plex, PlexSz, cand, CandSz, excl, ExclSz, neiInP, neiInG, pivot, adjList)) return;
@@ -4729,6 +4884,104 @@ __global__ void buildCommonMtx(int idx, P_pointers p, S_pointers s, G_pointers g
   // }
 }
 
+__device__ void move_min_neig_cand2_to_back(
+    int lane_id,
+    unsigned int* plex,
+    unsigned int PlexSz,
+    unsigned int* cand2,
+    unsigned int Cand2Sz,
+    unsigned int n,
+    const uint32_t* adjList,
+    uint16_t* neiInG,
+    uint16_t* neiInP)
+{
+  int pivotG = INT_MAX;
+  int pivotP = -1;
+
+  for (unsigned int i = lane_id; i < PlexSz; i += 32)
+  {
+    const int u = plex[i];
+    const int g = neiInG[u];
+
+    if (g < pivotG || (g == pivotG && (pivotP == -1 || u < pivotP)))
+    {
+      pivotG = g;
+      pivotP = u;
+    }
+  }
+
+  for (int off = 16; off > 0; off >>= 1)
+  {
+    const int og = __shfl_down_sync(0xFFFFFFFFu, pivotG, off);
+    const int op = __shfl_down_sync(0xFFFFFFFFu, pivotP, off);
+
+    if (og < pivotG || (og == pivotG && op != -1 && (pivotP == -1 || op < pivotP)))
+    {
+      pivotG = og;
+      pivotP = op;
+    }
+  }
+
+  pivotP = __shfl_sync(0xFFFFFFFFu, pivotP, 0);
+  if (pivotP == -1) return;
+
+  int bestG = INT_MAX;
+  int bestP = INT_MAX;
+  int bestV = INT_MAX;
+  int bestIdx = -1;
+
+  for (unsigned int i = lane_id; i < Cand2Sz; i += 32)
+  {
+    const int v = cand2[i];
+    int check = v * n + pivotP;
+    if (((adjList[check >> 5] >> (check & 31)) & 1u)) continue;
+    // if (local_adjacent(adjList, n, v, pivotP)) continue;
+
+    const int g = neiInG[v];
+    const int p = neiInP[v];
+
+    if (g < bestG ||
+        (g == bestG && p < bestP) ||
+        (g == bestG && p == bestP && v < bestV))
+    {
+      bestG = g;
+      bestP = p;
+      bestV = v;
+      bestIdx = i;
+    }
+  }
+
+  for (int off = 16; off > 0; off >>= 1)
+  {
+    const int og = __shfl_down_sync(0xFFFFFFFFu, bestG, off);
+    const int op = __shfl_down_sync(0xFFFFFFFFu, bestP, off);
+    const int ov = __shfl_down_sync(0xFFFFFFFFu, bestV, off);
+    const int oi = __shfl_down_sync(0xFFFFFFFFu, bestIdx, off);
+
+    if (og < bestG ||
+        (og == bestG && op < bestP) ||
+        (og == bestG && op == bestP && ov < bestV))
+    {
+      bestG = og;
+      bestP = op;
+      bestV = ov;
+      bestIdx = oi;
+    }
+  }
+
+  bestIdx = __shfl_sync(0xFFFFFFFFu, bestIdx, 0);
+
+  if (lane_id == 0 && bestIdx >= 0)
+  {
+    const unsigned int last = Cand2Sz - 1;
+    const unsigned int tmp = cand2[last];
+    cand2[last] = cand2[bestIdx];
+    cand2[bestIdx] = tmp;
+  }
+
+  __syncwarp();
+}
+
 __global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_pointers t, unsigned int* d_blk_counter, unsigned int* d_res, unsigned int* d_br, unsigned int* d_state, unsigned int* d_len, unsigned int* d_sz, uint16_t* neiInG, uint16_t* neiInP, unsigned int* plex_count, uint8_t* commonMtx, unsigned int* recCand1, unsigned int* recCand2, unsigned int* d_v2delete, uint32_t* d_adj, unsigned long long* cycles, int* abort_flag, int* d_abort, unsigned int *global_count)
 {
   unsigned int global_index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -4973,7 +5226,16 @@ __global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_poi
           sz--;
           continue;
         }
-        
+        move_min_neig_cand2_to_back(
+          lane_id,
+          plex,
+          PlexSz[0],
+          cand2,
+          Cand2Sz[0],
+          n,
+          adjList,
+          neiInGBase,
+          neiInPBase);
         if (lane_id == 0)
         {
           u = cand2[Cand2Sz[0]-1];
@@ -5055,6 +5317,17 @@ __global__ void kSearch(int idx, P_pointers p, S_pointers s, G_pointers g, T_poi
 
           if (Cand2Sz[0])
           {
+            // move_min_neiG_cand2_to_back(lane_id, cand2, Cand2Sz[0], neiInGBase, neiInPBase);
+            move_min_neig_cand2_to_back(
+              lane_id,
+              plex,
+              PlexSz[0],
+              cand2,
+              Cand2Sz[0],
+              n,
+              adjList,
+              neiInGBase,
+              neiInPBase);
             if (lane_id == 0)
             {
               u = cand2[--Cand2Sz[0]];
