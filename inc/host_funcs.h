@@ -1026,13 +1026,13 @@ void decomposableSearch(const graph<int> &g)
     unsigned int h_validblk;
 
     float time_0 = 0;
-    // float time_1 = 0;
-    // float time_2 = 0;
-    // float time_3 = 0;
-    // float time_4 = 0;
-    // float time_5 = 0;
-    // float time_6 = 0;
-    // float time_7 = 0;
+    float time_1 = 0;
+    float time_2 = 0;
+    float time_3 = 0;
+    float time_4 = 0;
+    float time_5 = 0;
+    float time_6 = 0;
+    float time_7 = 0;
     cudaEvent_t event_start;
     cudaEvent_t event_stop;
     cudaEventCreate(&event_start);
