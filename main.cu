@@ -4,6 +4,8 @@
 #include <cassert>
 #include <functional>
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
 #include "inc/host_funcs.h"
 //#include "kPlexEnum.h"
 //#include "device_funcs.h"
@@ -27,7 +29,7 @@ int main(int argc, char*argv[])
         usage();
         exit(1);
     } 
-    printf("file: %s\n",argv[1]); 
+    // printf("file: %s\n",argv[1]);
     while(i<argc){
        if(!strcmp(argv[i],"-k")){
             i = check_inc(i, argc);
@@ -57,12 +59,10 @@ int main(int argc, char*argv[])
         }
         i++;
     }
-    printf("k=%d,q=%d,thres=%f, truss: %d, local_bnb_steps=%d\n",k,lb, thres, truss, local_bnb_steps);
+    // printf("k=%d,q=%d,thres=%f, truss: %d, local_bnb_steps=%d\n",k,lb, thres, truss, local_bnb_steps);
     bd = lb-k; //lb = q
     graph<intT> g(argv[1]);
     //g.printGraph();
-    // int n=0; cudaGetDeviceCount(&n);
-    // printf("Visible CUDA devices: %d\n", n);
     decomposableSearch(g);
     g.del();
     return 0;

@@ -8,6 +8,9 @@
 #include <thrust/reduce.h>
 #include <thrust/execution_policy.h>
 #include <thrust/device_vector.h>
+#include <algorithm>
+#include <vector>
+#include <cstdlib>
 #include "device_funcs.h"
 #include "kPlexEnum.h"
 #include "gpu_memory_allocation.h"
@@ -112,7 +115,7 @@ graph<T> peelGraph(const graph<T> &g, bool *const mark, int *const resNei)
     leadList.del();
 
     graph<T> newGraph;
-    printf("\npn = %d\n", pn);
+    // printf("\npn = %d\n", pn);
     newGraph.n = pn;
     newGraph.m = totalEdges;
     newGraph.offsets = newOffsets;
@@ -137,9 +140,7 @@ void computeOffsets(S_pointers &s, unsigned int *d_blk_counter)
     }
 
     auto deg_ptr = thrust::device_pointer_cast(s.degree);
-    auto ldeg_ptr = thrust::device_pointer_cast(s.l_degree);
     auto off_ptr = thrust::device_pointer_cast(s.offsets);
-    auto loff_ptr = thrust::device_pointer_cast(s.l_offsets);
 
     thrust::exclusive_scan_by_key(
         thrust::device,
@@ -147,12 +148,6 @@ void computeOffsets(S_pointers &s, unsigned int *d_blk_counter)
         d_keys.end(),
         deg_ptr,
         off_ptr);
-    thrust::exclusive_scan_by_key(
-        thrust::device,
-        d_keys.begin(),
-        d_keys.end(),
-        ldeg_ptr,
-        loff_ptr);
 }
 
 void checkCudaError(int kernel)
@@ -165,330 +160,8 @@ void checkCudaError(int kernel)
     }
 }
 
-void spillToHost(T_pointers &t, unsigned int* d_tail_A, HostTaskBuffer& hostBuf)
-{
-    unsigned int tail = 0;
-    cudaMemcpy(&tail, d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-
-    unsigned int toMove = std::min(unsigned(STAGING_CHUNK), tail);
-
-    unsigned int deviceStart = tail - toMove;
-
-    // cudaMemcpyAsync(h_task_stage, d_tasks_A + deviceStart, toMove * sizeof(HostTask), cudaMemcpyDeviceToHost, stream);
-
-    // cudaStreamSynchronize(stream);
-    Task tmp;
-    for (unsigned int i = 0; i < toMove; i++)
-    {
-        unsigned int idx = deviceStart + i;
-
-        cudaMemcpy(&tmp, t.d_tasks_A + idx, sizeof(Task), cudaMemcpyDeviceToHost);
-
-        HostTask& h = hostBuf.tasks[hostBuf.size+i];
-        h.idx = tmp.idx;
-        h.PlexSz = tmp.PlexSz;
-        h.CandSz = tmp.CandSz;
-        h.ExclSz = tmp.ExclSz;
-
-        cudaMemcpy(h.labels, tmp.labels, MAX_BLK_SIZE * sizeof(uint8_t), cudaMemcpyDeviceToHost);
-        cudaMemcpy(h.neiInG, tmp.neiInG, MAX_BLK_SIZE * sizeof(uint16_t), cudaMemcpyDeviceToHost);
-        cudaMemcpy(h.neiInP, tmp.neiInP, MAX_BLK_SIZE * sizeof(uint16_t), cudaMemcpyDeviceToHost);
-    }
-
-    // memcpy(hostBuf.tasks + hostBuf.size, h_task_stage, toMove * sizeof(HostTask));
-
-    hostBuf.size += toMove;
-
-    tail -= toMove;
-    cudaMemcpy(d_tail_A, &tail, sizeof(unsigned int), cudaMemcpyHostToDevice);
-}
-
-void reFillTasks(T_pointers& t, unsigned int* d_tail_A, HostTaskBuffer& hostBuf)
-{
-    unsigned int tail;
-    cudaMemcpy(&tail, d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-
-    unsigned int fromHost = std::min(unsigned(STAGING_CHUNK), hostBuf.size);
-
-    unsigned int hostStart = hostBuf.size - fromHost;
-
-    // memcpy(h_task_stage, hostBuf.tasks + hostStart, fromHost * sizeof(HostTask));
-
-    // cudaMemcpyAsync(d_tasks_A + tail, h_task_stage, fromHost * sizeof(HostTask), cudaMemcpyHostToDevice, stream);
-
-    // cudaStreamSynchronize(stream);
-
-    for (unsigned int i = 0; i < fromHost; i++)
-    {
-        HostTask &h = hostBuf.tasks[hostStart + i];
-
-        unsigned int idx = tail + i;
-
-        uint8_t* labels_dev = t.d_all_labels_A + idx*MAX_BLK_SIZE;
-        uint16_t* neiInG_dev = t.d_all_neiInG_A + idx*MAX_BLK_SIZE;
-        uint16_t* neiInP_dev = t.d_all_neiInP_A + idx * MAX_BLK_SIZE;
-
-        cudaMemcpy(labels_dev, h.labels, MAX_BLK_SIZE * sizeof(uint8_t), cudaMemcpyHostToDevice);
-        cudaMemcpy(neiInG_dev, h.neiInG, MAX_BLK_SIZE * sizeof(uint16_t), cudaMemcpyHostToDevice);
-        cudaMemcpy(neiInP_dev, h.neiInP, MAX_BLK_SIZE * sizeof(uint16_t), cudaMemcpyHostToDevice);
-
-        Task tmp;
-        tmp.idx = h.idx;
-        tmp.PlexSz = h.PlexSz;
-        tmp.CandSz = h.CandSz;
-        tmp.ExclSz = h.ExclSz;
-        tmp.labels = labels_dev;
-        tmp.neiInG = neiInG_dev;
-        tmp.neiInP = neiInP_dev;
-
-        cudaMemcpy(t.d_tasks_A + idx, &tmp, sizeof(Task), cudaMemcpyHostToDevice);
-    }
-
-    hostBuf.size -= fromHost;
-
-    tail += fromHost;
-    cudaMemcpy(d_tail_A, &tail, sizeof(unsigned int), cudaMemcpyHostToDevice);
-}
-//original
-// void initializeBNB(int initialN, T_pointers &task_pointers, P_pointers plex_pointers, S_pointers subgraph_pointers, unsigned int *d_blk, unsigned int *d_left, unsigned int *d_blk_counter, unsigned int *d_left_counter, uint8_t *commonMtx, unsigned int *plex_count, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* d_abort, unsigned int* global_count)
-// {
-//     cudaMemset(d_abort, 0, sizeof(int));
-//     int h_abort = 0;
-//     unsigned int head = 0;
-//     // cudaMemcpy(&tail_max, task_pointers.d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-//     while (true)
-//     {
-//         unsigned int tail;
-//         // unsigned int plex;
-//         cudaMemcpy(&tail, task_pointers.d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-//         // cudaMemcpy(&plex, plex_count, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-//         // printf("tail: %u\n", tail);
-//         if (tail == 0)
-//             break;
-
-//         unsigned int batch;
-//         batch = std::min((unsigned)5*WARPS, tail);
-//         // else batch = std::min((unsigned)3*WARPS, tail);
-
-//         head = tail - batch;
-        
-//         chkerr(cudaMemcpy(task_pointers.d_tail_B, &batch, sizeof(unsigned int), cudaMemcpyHostToDevice));
-//         chkerr(cudaMemcpy(task_pointers.d_tasks_B, task_pointers.d_tasks_A + head, batch * sizeof(Task), cudaMemcpyDeviceToDevice));
-//         chkerr(cudaMemcpy(task_pointers.d_all_labels_B, task_pointers.d_all_labels_A + head * MAX_BLK_SIZE, batch * MAX_BLK_SIZE * sizeof(uint8_t), cudaMemcpyDeviceToDevice));
-//         chkerr(cudaMemcpy(task_pointers.d_all_neiInG_B, task_pointers.d_all_neiInG_A + head * MAX_BLK_SIZE, batch * MAX_BLK_SIZE * sizeof(uint16_t), cudaMemcpyDeviceToDevice));
-//         chkerr(cudaMemcpy(task_pointers.d_all_neiInP_B, task_pointers.d_all_neiInP_A + head * MAX_BLK_SIZE, batch * MAX_BLK_SIZE * sizeof(uint16_t), cudaMemcpyDeviceToDevice));
-
-//         tail = head;
-//         cudaMemcpy(task_pointers.d_tail_A, &tail, sizeof(tail), cudaMemcpyHostToDevice);
-//         bool flip = false;
-
-//         while (true)
-//         {
-//             unsigned int *tail_in = flip ? task_pointers.d_tail_C : task_pointers.d_tail_B;
-//             unsigned int *tail_out = flip ? task_pointers.d_tail_B : task_pointers.d_tail_C;
-//             Task *Q_in = flip ? task_pointers.d_tasks_C : task_pointers.d_tasks_B;
-//             Task *Q_out = flip ? task_pointers.d_tasks_B : task_pointers.d_tasks_C;
-//             uint8_t *lab_out = flip ? task_pointers.d_all_labels_B : task_pointers.d_all_labels_C;
-//             uint16_t *nei_out = flip ? task_pointers.d_all_neiInG_B : task_pointers.d_all_neiInG_C;
-//             uint16_t *P_out = flip ? task_pointers.d_all_neiInP_B : task_pointers.d_all_neiInP_C;
-
-//             cudaMemcpy(&tail, tail_in, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-//             // printf("tail inside: %d\n", tail);
-//             if (tail == 0)
-//                 break;
-//             cudaMemset(tail_out, 0, sizeof(unsigned int));
-//             unsigned int numTasks = tail;
-//             unsigned int waves = (numTasks) / WARPS + 1;
-
-//             for (unsigned int w = 0; w < waves; w++)
-//             {
-//                 BNB<<<BLK_NUMS, BLK_DIM>>>(w, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, Q_in, Q_out, task_pointers.d_tasks_A, numTasks, 0, tail_out, task_pointers.d_tail_A, lab_out, nei_out, P_out, task_pointers.d_all_labels_A, task_pointers.d_all_neiInG_A, task_pointers.d_all_neiInP_A, plex_count, d_sat, d_commons, d_uni, cycles, d_adj, d_abort, global_count);
-//                 cudaMemcpy(&h_abort, d_abort, sizeof(int), cudaMemcpyDeviceToHost);
-//                 if (h_abort) 
-//                 {
-//                     printf("Maximum Capacity Reached on level %d\n", initialN);
-//                     break;
-//                 }
-//                 // cudaMemcpy(&tail, task_pointers.d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-//                 // printf("tail: %d, capacity: %u\n", tail, MAX_CAP/4);
-//                 // if (h_abort)
-//                 // {
-//                     // printf("Maximum Capacity Reached on level %d\n", initialN);
-//                     // printf("Copying Some Tasks To Host Memory with size: %u\n", hostBuf.size);
-//                     // spillToHost(task_pointers, task_pointers.d_tail_A, hostBuf);
-//                     // cudaMemset(d_abort, 0, sizeof(int));
-//                 // }
-//             }
-//             cudaDeviceSynchronize();
-//             checkCudaError(initialN);
-//             if (h_abort) break;
-//             // cudaMemcpy(&tail, task_pointers.d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-//             // if (tail == 0) break;
-//             flip = !flip;
-//         }
-//         if(h_abort) break;
-//     }
-//     // printf("tailmax: %d\n", tail_max);
-//     cudaMemset(task_pointers.d_tail_A, 0, sizeof(unsigned int));
-//     cudaMemset(task_pointers.d_tail_B, 0, sizeof(unsigned int));
-//     cudaMemset(task_pointers.d_tail_C, 0, sizeof(unsigned int));
-// }
-
-// With tiny task
-// void initializeBNB(int initialN, T_pointers &task_pointers, P_pointers plex_pointers, S_pointers subgraph_pointers, unsigned int *d_blk, unsigned int *d_left, unsigned int *d_blk_counter, unsigned int *d_left_counter, uint8_t *commonMtx, unsigned int *plex_count, uint16_t* bnb_neiInG, uint16_t* bnb_neiInP, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* d_abort, unsigned int* global_count)
-// {
-//     cudaMemset(d_abort, 0, sizeof(int));
-//     int h_abort = 0;
-//     chkerr(cudaMemset(task_pointers.d_tail_B, 0, sizeof(unsigned int)));
-
-//     auto drainTinyFrontier = [&](Task* parent_tasks, Task* checkpoint_tasks, uint8_t* checkpoint_labels, uint16_t* checkpoint_neiInG, uint16_t* checkpoint_neiInP, unsigned int* checkpoint_tail, unsigned int checkpoint_cap) -> bool
-//     {
-//         while (true)
-//         {
-//             bool flip = false;
-//             while (true)
-//             {
-//                 unsigned int *tail_in = flip ? task_pointers.d_tiny_tail_C : task_pointers.d_tiny_tail_B;
-//                 unsigned int *tail_out = flip ? task_pointers.d_tiny_tail_B : task_pointers.d_tiny_tail_C;
-//                 TinyTask *Q_in = flip ? task_pointers.d_tiny_tasks_C : task_pointers.d_tiny_tasks_B;
-//                 TinyTask *Q_out = flip ? task_pointers.d_tiny_tasks_B : task_pointers.d_tiny_tasks_C;
-
-//                 unsigned int tail = 0;
-//                 cudaMemcpy(&tail, tail_in, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-//                 if (tail == 0)
-//                     break;
-//                 cudaMemset(tail_out, 0, sizeof(unsigned int));
-//                 unsigned int numTasks = tail;
-//                 unsigned int waves = (numTasks + WARPS - 1) / WARPS;
-
-//                 for (unsigned int w = 0; w < waves; w++)
-//                 {
-//                     BNB<<<BLK_NUMS, BLK_DIM>>>(w, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, parent_tasks, Q_in, Q_out, task_pointers.d_tiny_tasks_A, numTasks, tail_out, task_pointers.d_tiny_tail_A, task_pointers.Delta, task_pointers.d_delta_tail, task_pointers.d_replay_stack, checkpoint_tasks, checkpoint_labels, checkpoint_neiInG, checkpoint_neiInP, checkpoint_tail, checkpoint_cap, plex_count, bnb_neiInG, bnb_neiInP, d_sat, d_commons, d_uni, cycles, d_adj, d_abort, global_count);
-//                     cudaMemcpy(&h_abort, d_abort, sizeof(int), cudaMemcpyDeviceToHost);
-//                     if (h_abort)
-//                     {
-//                         unsigned int h_tail_in = 0;
-//                         unsigned int h_tail_out = 0;
-//                         unsigned int h_tiny_overflow_tail = 0;
-//                         unsigned int h_delta_tail = 0;
-//                         unsigned int h_checkpoint_tail = 0;
-//                         cudaMemcpy(&h_tail_in, tail_in, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-//                         cudaMemcpy(&h_tail_out, tail_out, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-//                         cudaMemcpy(&h_tiny_overflow_tail, task_pointers.d_tiny_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-//                         cudaMemcpy(&h_delta_tail, task_pointers.d_delta_tail, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-//                         cudaMemcpy(&h_checkpoint_tail, task_pointers.d_checkpoint_tail, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-//                         if (h_abort == 1)
-//                             printf("Maximum TinyTask Capacity Reached on level %d\n", initialN);
-//                         else if (h_abort == 2)
-//                             printf("Maximum Delta Capacity Reached on level %d\n", initialN);
-//                         else if (h_abort == 3)
-//                             printf("Maximum Replay Stack Capacity Reached on level %d\n", initialN);
-//                         else if (h_abort == 4)
-//                             printf("Invalid Linked Delta Log on level %d\n", initialN);
-//                         else if (h_abort == 5)
-//                             printf("Maximum Checkpoint Task Capacity Reached on level %d\n", initialN);
-//                         else
-//                             printf("Maximum Capacity Reached on level %d\n", initialN);
-//                         printf("TinyTask tails: in=%u out=%u overflow=%u/%u, Delta=%u/%u, checkpoints=%u/%u\n",
-//                                h_tail_in,
-//                                h_tail_out,
-//                                h_tiny_overflow_tail,
-//                                (unsigned int)TINY_OVERFLOW_CAP,
-//                                h_delta_tail,
-//                                (unsigned int)DELTA_CAP,
-//                                h_checkpoint_tail,
-//                                (unsigned int)MAX_CAP);
-//                         break;
-//                     }
-//                 }
-//                 cudaDeviceSynchronize();
-//                 checkCudaError(initialN);
-//                 if (h_abort) break;
-//                 flip = !flip;
-//             }
-//             if (h_abort) break;
-
-//             unsigned int tiny_tail = 0;
-//             cudaMemcpy(&tiny_tail, task_pointers.d_tiny_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-//             if (tiny_tail == 0) break;
-
-//             unsigned int tiny_batch = std::min((unsigned)5*WARPS, tiny_tail);
-//             unsigned int tiny_head = tiny_tail - tiny_batch;
-//             chkerr(cudaMemcpy(task_pointers.d_tiny_tasks_B, task_pointers.d_tiny_tasks_A + tiny_head, tiny_batch * sizeof(TinyTask), cudaMemcpyDeviceToDevice));
-//             chkerr(cudaMemcpy(task_pointers.d_tiny_tail_B, &tiny_batch, sizeof(unsigned int), cudaMemcpyHostToDevice));
-//             chkerr(cudaMemset(task_pointers.d_tiny_tail_C, 0, sizeof(unsigned int)));
-
-//             tiny_tail = tiny_head;
-//             chkerr(cudaMemcpy(task_pointers.d_tiny_tail_A, &tiny_tail, sizeof(unsigned int), cudaMemcpyHostToDevice));
-//         }
-
-//         return h_abort == 0;
-//     };
-
-//     auto processTaskQueue = [&](Task* parent_tasks, unsigned int* parent_tail, Task* checkpoint_tasks, uint8_t* checkpoint_labels, uint16_t* checkpoint_neiInG, uint16_t* checkpoint_neiInP, unsigned int* checkpoint_tail, unsigned int checkpoint_cap) -> bool
-//     {
-//         while (true)
-//         {
-//             unsigned int tail = 0;
-//             cudaMemcpy(&tail, parent_tail, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-//             if (tail == 0) break;
-
-//             unsigned int batch = std::min((unsigned)5*WARPS, tail);
-//             unsigned int head = tail - batch;
-
-//             chkerr(cudaMemset(task_pointers.d_delta_tail, 0, sizeof(unsigned int)));
-//             chkerr(cudaMemset(task_pointers.d_tiny_tail_A, 0, sizeof(unsigned int)));
-//             chkerr(cudaMemset(task_pointers.d_tiny_tail_C, 0, sizeof(unsigned int)));
-
-//             unsigned int threads = 256;
-//             unsigned int blocks = (batch + threads - 1) / threads;
-//             seedInitialTinyTasks<<<blocks, threads>>>(parent_tasks, task_pointers.d_tiny_tasks_B, head, batch);
-//             cudaDeviceSynchronize();
-//             checkCudaError(initialN);
-
-//             chkerr(cudaMemcpy(task_pointers.d_tiny_tail_B, &batch, sizeof(unsigned int), cudaMemcpyHostToDevice));
-
-//             tail = head;
-//             cudaMemcpy(parent_tail, &tail, sizeof(tail), cudaMemcpyHostToDevice);
-
-//             if (!drainTinyFrontier(parent_tasks, checkpoint_tasks, checkpoint_labels, checkpoint_neiInG, checkpoint_neiInP, checkpoint_tail, checkpoint_cap)) return false;
-//         }
-
-//         return h_abort == 0;
-//     };
-
-
-//     if (processTaskQueue(task_pointers.d_tasks_A, task_pointers.d_tail_A, task_pointers.d_tasks_B, task_pointers.d_all_labels_B, task_pointers.d_all_neiInG_B, task_pointers.d_all_neiInP_B, task_pointers.d_tail_B, CHECKPOINT_TASK_CAP))
-//     {
-//         while (!h_abort)
-//         {
-//             unsigned int tail_B = 0;
-//             cudaMemcpy(&tail_B, task_pointers.d_tail_B, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-//             if (tail_B == 0) break;
-
-//             chkerr(cudaMemset(task_pointers.d_tail_A, 0, sizeof(unsigned int)));
-//             if (!processTaskQueue(task_pointers.d_tasks_B, task_pointers.d_tail_B, task_pointers.d_tasks_A, task_pointers.d_all_labels_A, task_pointers.d_all_neiInG_A, task_pointers.d_all_neiInP_A, task_pointers.d_tail_A, MAX_CAP)) break;
-
-//             unsigned int tail_A = 0;
-//             cudaMemcpy(&tail_A, task_pointers.d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-//             if (tail_A == 0) break;
-
-//             chkerr(cudaMemset(task_pointers.d_tail_B, 0, sizeof(unsigned int)));
-//             if (!processTaskQueue(task_pointers.d_tasks_A, task_pointers.d_tail_A, task_pointers.d_tasks_B, task_pointers.d_all_labels_B, task_pointers.d_all_neiInG_B, task_pointers.d_all_neiInP_B, task_pointers.d_tail_B, CHECKPOINT_TASK_CAP)) break;
-//         }
-//     }
-//     // printf("tailmax: %d\n", tail_max);
-//     cudaMemset(task_pointers.d_tail_A, 0, sizeof(unsigned int));
-//     cudaMemset(task_pointers.d_tail_B, 0, sizeof(unsigned int));
-//     cudaMemset(task_pointers.d_tiny_tail_A, 0, sizeof(unsigned int));
-//     cudaMemset(task_pointers.d_tiny_tail_B, 0, sizeof(unsigned int));
-//     cudaMemset(task_pointers.d_tiny_tail_C, 0, sizeof(unsigned int));
-//     cudaMemset(task_pointers.d_delta_tail, 0, sizeof(unsigned int));
-//     // cudaMemset(task_pointers.d_checkpoint_tail, 0, sizeof(unsigned int));
-// }
-
 //with DFS Task
-void initializeBNB(int initialN, T_pointers &task_pointers, P_pointers plex_pointers, S_pointers subgraph_pointers, unsigned int *d_blk, unsigned int *d_left, unsigned int *d_blk_counter, unsigned int *d_left_counter, uint8_t *commonMtx, unsigned int *plex_count, uint16_t* bnb_neiInG, uint16_t* bnb_neiInP, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* d_abort, unsigned int* global_count)
+void initializeBNB(int initialN, T_pointers &task_pointers, P_pointers plex_pointers, S_pointers subgraph_pointers, unsigned int *d_blk, unsigned int *d_left, unsigned int *d_blk_counter, unsigned int *d_left_counter, uint8_t *commonMtx, unsigned int *plex_count, uint16_t* bnb_neiInG, uint16_t* bnb_neiInP, uint16_t* d_sat, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, uint32_t* d_left_adj, uint32_t* d_local_left_adj, int* d_abort, unsigned int* global_count)
 {
     cudaMemset(d_abort, 0, sizeof(int));
     chkerr(cudaMemset(task_pointers.d_tail_B, 0, sizeof(unsigned int)));
@@ -498,12 +171,12 @@ void initializeBNB(int initialN, T_pointers &task_pointers, P_pointers plex_poin
     while (true)
     {
         unsigned int tail = 0;
-        cudaMemcpy(&tail, task_pointers.d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
+        chkerr(cudaMemcpy(&tail, task_pointers.d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost));
         if (tail == 0)
             break;
 
         unsigned int batch;
-        batch = std::min((unsigned)5*WARPS, tail);
+        batch = std::min((unsigned)(5 * WARPS), tail);
 
         unsigned int head = tail - batch;
         
@@ -520,7 +193,7 @@ void initializeBNB(int initialN, T_pointers &task_pointers, P_pointers plex_poin
         checkCudaError(initialN);
 
         tail = head;
-        cudaMemcpy(task_pointers.d_tail_A, &tail, sizeof(tail), cudaMemcpyHostToDevice);
+        chkerr(cudaMemcpy(task_pointers.d_tail_A, &tail, sizeof(tail), cudaMemcpyHostToDevice));
         chkerr(cudaMemset(task_pointers.d_tail_C, 0, sizeof(unsigned int)));
 
         bool flip = false;
@@ -535,7 +208,7 @@ void initializeBNB(int initialN, T_pointers &task_pointers, P_pointers plex_poin
             uint16_t *nei_out = flip ? task_pointers.d_all_neiInG_B : task_pointers.d_all_neiInG_C;
             uint16_t *P_out = flip ? task_pointers.d_all_neiInP_B : task_pointers.d_all_neiInP_C;
 
-            cudaMemcpy(&tail, tail_in, sizeof(unsigned int), cudaMemcpyDeviceToHost);
+            chkerr(cudaMemcpy(&tail, tail_in, sizeof(unsigned int), cudaMemcpyDeviceToHost));
             if (tail == 0)
                 break;
             cudaMemset(tail_out, 0, sizeof(unsigned int));
@@ -544,15 +217,15 @@ void initializeBNB(int initialN, T_pointers &task_pointers, P_pointers plex_poin
 
             for (unsigned int w = 0; w < waves; w++)
             {
-                BNB<<<BLK_NUMS, BLK_DIM>>>(w, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, Q_in, Q_out, task_pointers.d_tasks_A, numTasks, 0, tail_out, task_pointers.d_tail_A, lab_out, nei_out, P_out, task_pointers.d_all_labels_A, task_pointers.d_all_neiInG_A, task_pointers.d_all_neiInP_A, plex_count, bnb_neiInG, bnb_neiInP, d_sat, d_commons, d_uni, cycles, d_adj, d_abort, global_count);
+                BNB<<<BLK_NUMS, BLK_DIM>>>(w, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, Q_in, Q_out, task_pointers.d_tasks_A, numTasks, 0, tail_out, task_pointers.d_tail_A, lab_out, nei_out, P_out, task_pointers.d_all_labels_A, task_pointers.d_all_neiInG_A, task_pointers.d_all_neiInP_A, plex_count, bnb_neiInG, bnb_neiInP, d_sat, d_uni, cycles, d_adj, d_left_adj, d_local_left_adj, d_abort, global_count);
                 cudaDeviceSynchronize();
                 checkCudaError(initialN);
-                cudaMemcpy(&h_abort, d_abort, sizeof(int), cudaMemcpyDeviceToHost);
+                chkerr(cudaMemcpy(&h_abort, d_abort, sizeof(int), cudaMemcpyDeviceToHost));
                 if (h_abort) 
                 {
                     unsigned int overflow_tail = 0;
                     chkerr(cudaMemcpy(&overflow_tail, task_pointers.d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost));
-                    printf("Maximum Task Capacity Reached on level %d, overflow tail=%u/%u\n", initialN, overflow_tail, (unsigned int)MAX_CAP);
+                    printf("Maximum Task Capacity Reached on level %d, overflow tail=%u/%d\n", initialN, overflow_tail, (int)MAX_CAP);
                     break;
                 }
             }
@@ -566,133 +239,6 @@ void initializeBNB(int initialN, T_pointers &task_pointers, P_pointers plex_poin
     cudaMemset(task_pointers.d_tail_A, 0, sizeof(unsigned int));
     cudaMemset(task_pointers.d_tail_B, 0, sizeof(unsigned int));
     cudaMemset(task_pointers.d_tail_C, 0, sizeof(unsigned int));
-}
-
-//Full DFS with both include and exclude
-// void initializeBNB(int initialN, T_pointers &task_pointers, P_pointers plex_pointers, S_pointers subgraph_pointers, unsigned int *d_blk, unsigned int *d_left, unsigned int *d_blk_counter, unsigned int *d_left_counter, uint8_t *commonMtx, unsigned int *plex_count, uint16_t* bnb_neiInG, uint16_t* bnb_neiInP, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* d_abort, unsigned int* global_count)
-// {
-//     cudaMemset(d_abort, 0, sizeof(int));
-//     chkerr(cudaMemset(task_pointers.d_tail_B, 0, sizeof(unsigned int)));
-//     chkerr(cudaMemset(task_pointers.d_tail_C, 0, sizeof(unsigned int)));
-
-//     int h_abort = 0;
-//     while (true)
-//     {
-//         unsigned int tail = 0;
-//         cudaMemcpy(&tail, task_pointers.d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-//         if (tail == 0)
-//             break;
-
-//         unsigned int batch;
-//         batch = std::min((unsigned)5*WARPS, tail);
-
-//         unsigned int head = tail - batch;
-        
-//         chkerr(cudaMemcpy(task_pointers.d_tail_B, &batch, sizeof(unsigned int), cudaMemcpyHostToDevice));
-//         chkerr(cudaMemcpy(task_pointers.d_tasks_B, task_pointers.d_tasks_A + head, batch * sizeof(Task), cudaMemcpyDeviceToDevice));
-//         chkerr(cudaMemcpy(task_pointers.d_all_labels_B, task_pointers.d_all_labels_A + head * MAX_BLK_SIZE, batch * MAX_BLK_SIZE * sizeof(uint8_t), cudaMemcpyDeviceToDevice));
-//         chkerr(cudaMemcpy(task_pointers.d_all_neiInG_B, task_pointers.d_all_neiInG_A + head * MAX_BLK_SIZE, batch * MAX_BLK_SIZE * sizeof(uint16_t), cudaMemcpyDeviceToDevice));
-//         chkerr(cudaMemcpy(task_pointers.d_all_neiInP_B, task_pointers.d_all_neiInP_A + head * MAX_BLK_SIZE, batch * MAX_BLK_SIZE * sizeof(uint16_t), cudaMemcpyDeviceToDevice));
-
-//         unsigned int threads = 256;
-//         unsigned int blocks = (batch + threads - 1) / threads;
-//         rebaseTaskQueuePointers<<<blocks, threads>>>(task_pointers.d_tasks_B, task_pointers.d_all_labels_B, task_pointers.d_all_neiInG_B, task_pointers.d_all_neiInP_B, batch);
-//         cudaDeviceSynchronize();
-//         checkCudaError(initialN);
-
-//         tail = head;
-//         cudaMemcpy(task_pointers.d_tail_A, &tail, sizeof(tail), cudaMemcpyHostToDevice);
-
-//         unsigned int numTasks = batch;
-//         unsigned int waves = (numTasks + WARPS - 1) / WARPS;
-
-//         for (unsigned int w = 0; w < waves; w++)
-//         {
-//             BNB<<<BLK_NUMS, BLK_DIM>>>(w, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, task_pointers.d_tasks_B, task_pointers.d_tasks_C, task_pointers.d_tasks_A, numTasks, 0, task_pointers.d_tail_C, task_pointers.d_tail_A, task_pointers.d_all_labels_C, task_pointers.d_all_neiInG_C, task_pointers.d_all_neiInP_C, task_pointers.d_all_labels_A, task_pointers.d_all_neiInG_A, task_pointers.d_all_neiInP_A, plex_count, bnb_neiInG, bnb_neiInP, d_sat, d_commons, d_uni, cycles, d_adj, d_abort, global_count);
-//             cudaDeviceSynchronize();
-//             checkCudaError(initialN);
-//             cudaMemcpy(&h_abort, d_abort, sizeof(int), cudaMemcpyDeviceToHost);
-//             if (h_abort) 
-//             {
-//                 unsigned int overflow_tail = 0;
-//                 chkerr(cudaMemcpy(&overflow_tail, task_pointers.d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost));
-//                 printf("Maximum Task Capacity Reached on level %d, overflow tail=%u/%u\n", initialN, overflow_tail, (unsigned int)MAX_CAP);
-//                 break;
-//             }
-//         }
-//         if(h_abort) break;
-//     }
-//     cudaMemset(task_pointers.d_tail_A, 0, sizeof(unsigned int));
-//     cudaMemset(task_pointers.d_tail_B, 0, sizeof(unsigned int));
-//     cudaMemset(task_pointers.d_tail_C, 0, sizeof(unsigned int));
-// }
-
-void initializeBNB2(int initialN, T_pointers &task_pointers, P_pointers plex_pointers, S_pointers subgraph_pointers, unsigned int *d_blk, unsigned int *d_left, unsigned int *d_blk_counter, unsigned int *d_left_counter, uint8_t *commonMtx, unsigned int *plex_count, uint16_t* d_sat, uint16_t* d_commons, uint32_t* d_uni, unsigned long long* cycles, uint32_t* d_adj, int* d_abort, HostTaskBuffer& hostBuf, HostTask* h_task_stage, unsigned int* state, unsigned int* res, unsigned int* recExcl, unsigned int* recCand)
-{
-    // cudaMemset(d_abort, 0, sizeof(int));
-    // int h_abort = 0;
-    unsigned int tail_max;
-    cudaMemcpy(&tail_max, task_pointers.d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-    unsigned int head = 0;
-    while (true)
-    {
-        unsigned int tail;
-        // unsigned int plex;
-        cudaMemcpy(&tail, task_pointers.d_tail_A, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-        // cudaMemcpy(&plex, plex_count, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-        // printf("tail: %u\n", tail);
-        if (tail > tail_max)
-            tail_max = tail;
-        if (tail == 0)
-            break;
-
-        unsigned int batch;
-        batch = std::min((unsigned)5*WARPS, tail);
-        // else batch = std::min((unsigned)3*WARPS, tail);
-
-        head = tail - batch;
-        
-        chkerr(cudaMemcpy(task_pointers.d_tail_B, &batch, sizeof(unsigned int), cudaMemcpyHostToDevice));
-        chkerr(cudaMemcpy(task_pointers.d_tasks_B, task_pointers.d_tasks_A + head, batch * sizeof(Task), cudaMemcpyDeviceToDevice));
-        chkerr(cudaMemcpy(task_pointers.d_all_labels_B, task_pointers.d_all_labels_A + head * MAX_BLK_SIZE, batch * MAX_BLK_SIZE * sizeof(uint8_t), cudaMemcpyDeviceToDevice));
-        chkerr(cudaMemcpy(task_pointers.d_all_neiInG_B, task_pointers.d_all_neiInG_A + head * MAX_BLK_SIZE, batch * MAX_BLK_SIZE * sizeof(uint16_t), cudaMemcpyDeviceToDevice));
-        chkerr(cudaMemcpy(task_pointers.d_all_neiInP_B, task_pointers.d_all_neiInP_A + head * MAX_BLK_SIZE, batch * MAX_BLK_SIZE * sizeof(uint16_t), cudaMemcpyDeviceToDevice));
-
-        tail = head;
-        cudaMemcpy(task_pointers.d_tail_A, &tail, sizeof(tail), cudaMemcpyHostToDevice);
-        bool flip = false;
-
-        while (true)
-        {
-            unsigned int *tail_in = flip ? task_pointers.d_tail_C : task_pointers.d_tail_B;
-            unsigned int *tail_out = flip ? task_pointers.d_tail_B : task_pointers.d_tail_C;
-            Task *Q_in = flip ? task_pointers.d_tasks_C : task_pointers.d_tasks_B;
-            Task *Q_out = flip ? task_pointers.d_tasks_B : task_pointers.d_tasks_C;
-            uint8_t *lab_out = flip ? task_pointers.d_all_labels_B : task_pointers.d_all_labels_C;
-            uint16_t *nei_out = flip ? task_pointers.d_all_neiInG_B : task_pointers.d_all_neiInG_C;
-            uint16_t *P_out = flip ? task_pointers.d_all_neiInP_B : task_pointers.d_all_neiInP_C;
-
-            cudaMemcpy(&tail, tail_in, sizeof(unsigned int), cudaMemcpyDeviceToHost);
-            // printf("tail inside: %d\n", tail);
-            if (tail == 0)
-                break;
-            cudaMemset(tail_out, 0, sizeof(unsigned int));
-            unsigned int numTasks = tail;
-            unsigned int waves = (numTasks) / WARPS + 1;
-
-            for (unsigned int w = 0; w < waves; w++)
-            {
-                BNB2<<<BLK_NUMS, BLK_DIM>>>(w, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, Q_in, Q_out, task_pointers.d_tasks_A, numTasks, 0, tail_out, task_pointers.d_tail_A, lab_out, nei_out, P_out, task_pointers.d_all_labels_A, task_pointers.d_all_neiInG_A, task_pointers.d_all_neiInP_A, plex_count, d_sat, d_commons, d_uni, cycles, d_adj, d_abort, state, res, recExcl, recCand);
-            }
-            cudaDeviceSynchronize();
-            checkCudaError(initialN);
-            flip = !flip;
-        }
-    }
-    printf("tailmax: %d\n", tail_max);
-    // cudaMemset(task_pointers.d_tail_A, 0, sizeof(unsigned int));
-    // cudaMemset(task_pointers.d_tail_B, 0, sizeof(unsigned int));
-    // cudaMemset(task_pointers.d_tail_C, 0, sizeof(unsigned int));
 }
 
 inline int find_pos_sorted(unsigned int* neighbors, unsigned int* offsets, unsigned int u, unsigned int v)
@@ -999,19 +545,6 @@ void fast_truss_peeling_parallel(unsigned int* neighbors, unsigned int* offsets,
     triangles.resize(write);
 }
 
-
-
-
-void initHostTaskBuffer(HostTaskBuffer &buf, unsigned int capacity)
-{
-    buf.capacity = capacity;
-    buf.size = 0;
-    // cudaHostAlloc(&buf.tasks, capacity * sizeof(HostTask), cudaHostAllocDefault);
-    buf.tasks = new HostTask[capacity];
-}
-
-
-
 void decomposableSearch(const graph<int> &g)
 {
     int *dpos = new int[g.n];
@@ -1162,9 +695,15 @@ pn = peelG.n;
     S_pointers subgraph_pointers;
     T_pointers task_pointers;
 
-    printf("Start copying graph to GPU....\n");
+    // printf("Start copying graph to GPU....\n");
     copy_graph_to_gpu<intT>(peelG, dpos, dseq, graph_pointers, degen_pointers, subgraph_pointers);
-    printf("Done copying graph to GPU....\n");
+    // printf("Done copying graph to GPU....\n");
+    // {
+    //     size_t free_bytes = 0, total_bytes = 0;
+    //     chkerr(cudaMemGetInfo(&free_bytes, &total_bytes));
+    //     printf("GPU memory after graph copy: %.2f GB free / %.2f GB total\n",
+    //            free_bytes / (1024.0*1024.0*1024.0), total_bytes / (1024.0*1024.0*1024.0));
+    // }
 
     unsigned int *d_blk;
     unsigned int *d_blk_counter;
@@ -1180,23 +719,20 @@ pn = peelG.n;
     unsigned int h_plex_count;
 
     uint16_t *d_sat;
-    uint16_t *d_commons;
     uint32_t *d_uni;
     uint32_t *d_adj;
+    uint32_t *d_left_adj;
+    uint32_t *d_local_left_adj;
 
     unsigned int* d_res;
-    unsigned int* d_res2;
     unsigned int* d_br;
     unsigned int* d_state;
-    unsigned int* d_state2;
     unsigned int* d_v2delete;
     unsigned int* d_len;
     unsigned int* d_sz;
 
     unsigned int* recCand1;
     unsigned int* recCand2;
-    unsigned int* recExcl;
-    unsigned int* recCand;
 
     uint16_t* neiInG;
     uint16_t* neiInP; 
@@ -1210,18 +746,14 @@ pn = peelG.n;
 
 
     cudaMalloc(&d_res, WARPS * MAX_DEPTH * sizeof(unsigned int));
-    cudaMalloc(&d_res2, WARPS * MAX_DEPTH * sizeof(unsigned int));
     cudaMalloc(&d_br, WARPS * MAX_DEPTH * sizeof(unsigned int));
     cudaMalloc(&d_state, WARPS * MAX_DEPTH * sizeof(unsigned int));
-    cudaMalloc(&d_state2, WARPS * MAX_DEPTH * sizeof(unsigned int));
     cudaMalloc(&d_v2delete, WARPS * MAX_DEPTH * sizeof(unsigned int));
     cudaMalloc(&d_len, WARPS * sizeof(unsigned int));
     cudaMalloc(&d_sz, WARPS * sizeof(unsigned int));
 
     cudaMalloc(&recCand1, WARPS * MAX_BLK_SIZE * sizeof(unsigned int));
     cudaMalloc(&recCand2, WARPS * MAX_BLK_SIZE * sizeof(unsigned int));
-    cudaMalloc(&recExcl, WARPS * MAX_BLK_SIZE * sizeof(unsigned int));
-    cudaMalloc(&recCand, WARPS * MAX_BLK_SIZE * sizeof(unsigned int));
 
     cudaMalloc(&neiInG, WARPS * MAX_BLK_SIZE * sizeof(uint16_t));
     cudaMalloc(&neiInP, WARPS * MAX_BLK_SIZE * sizeof(uint16_t));
@@ -1230,9 +762,10 @@ pn = peelG.n;
     cudaMalloc(&bnb_neiInP, WARPS * MAX_BLK_SIZE * sizeof(uint16_t));
 
     cudaMalloc(&d_sat, WARPS * MAX_BLK_SIZE * sizeof(uint16_t));
-    cudaMalloc(&d_commons, WARPS * MAX_BLK_SIZE * sizeof(uint16_t));
-    cudaMalloc(&d_uni, WARPS * 32 * sizeof(uint32_t));
+    cudaMalloc(&d_uni, WARPS * MAXIMAL_MASK_WORDS * sizeof(uint32_t));
     cudaMalloc(&d_adj, ADJSIZE * WARPS * sizeof(uint32_t));
+    cudaMalloc(&d_left_adj, LEFT_ADJ_SIZE * WARPS * sizeof(uint32_t));
+    cudaMalloc(&d_local_left_adj, LOCAL_LEFT_ADJ_SIZE * WARPS * sizeof(uint32_t));
 
     thrust::device_ptr<unsigned int> deg_ptr(subgraph_pointers.degree);
     thrust::device_ptr<unsigned int> off_ptr(subgraph_pointers.offsets);
@@ -1252,7 +785,7 @@ pn = peelG.n;
     cudaMalloc(&d_blk, MAX_BLK_SIZE * WARPS * sizeof(unsigned int));
     cudaMalloc(&d_blk_counter, WARPS * sizeof(unsigned int));
 
-    cudaMalloc(&d_left, MAX_BLK_SIZE * WARPS * sizeof(unsigned int));
+    cudaMalloc(&d_left, MAX_LEFT_SIZE * WARPS * sizeof(unsigned int));
     cudaMalloc(&d_left_counter, WARPS * sizeof(unsigned int));
     cudaMalloc(&d_hopSz, WARPS * sizeof(unsigned int));
     size_t totalBytes = size_t(WARPS) * CAP * sizeof(uint8_t);
@@ -1272,10 +805,10 @@ pn = peelG.n;
     cudaMemset(commonMtx, 0, totalBytes);
     cudaMemset(recCand1, 0, WARPS * MAX_BLK_SIZE * sizeof(unsigned int));
     cudaMemset(recCand2, 0, WARPS * MAX_BLK_SIZE * sizeof(unsigned int));
-    cudaMemset(recExcl, 0, WARPS * MAX_BLK_SIZE * sizeof(unsigned int));
-    cudaMemset(recCand, 0, WARPS * MAX_BLK_SIZE * sizeof(unsigned int));
-    cudaMemset(d_uni, 0, WARPS * 32 * sizeof(uint32_t));
+    cudaMemset(d_uni, 0, WARPS * MAXIMAL_MASK_WORDS * sizeof(uint32_t));
     cudaMemset(d_adj, 0, ADJSIZE * WARPS * sizeof(uint32_t));
+    cudaMemset(d_left_adj, 0, LEFT_ADJ_SIZE * WARPS * sizeof(uint32_t));
+    cudaMemset(d_local_left_adj, 0, LOCAL_LEFT_ADJ_SIZE * WARPS * sizeof(uint32_t));
     cudaMemset(cycles, 0, 40 * sizeof(unsigned long long));
 
     size_t capacity = MAX_CAP;
@@ -1287,20 +820,6 @@ pn = peelG.n;
     chkerr(cudaMalloc(&task_pointers.d_tail_A, sizeof(unsigned int)));
     chkerr(cudaMemset(task_pointers.d_tail_A, 0, sizeof(unsigned int)));
 
-    // capacity = TINY_OVERFLOW_CAP;
-    // chkerr(cudaMalloc(&task_pointers.d_tiny_tasks_A, capacity * sizeof(TinyTask)));
-    // chkerr(cudaMalloc(&task_pointers.d_tiny_tail_A, sizeof(unsigned int)));
-    // chkerr(cudaMemset(task_pointers.d_tiny_tail_A, 0, sizeof(unsigned int)));
-    // chkerr(cudaMalloc(&task_pointers.Delta, (size_t)DELTA_CAP * sizeof(BranchLog)));
-    // chkerr(cudaMalloc(&task_pointers.d_delta_tail, sizeof(unsigned int)));
-    // chkerr(cudaMemset(task_pointers.d_delta_tail, 0, sizeof(unsigned int)));
-    // chkerr(cudaMalloc(&task_pointers.d_replay_stack, (size_t)WARPS * REPLAY_STACK_CAP * sizeof(unsigned int)));
-    // chkerr(cudaMalloc(&task_pointers.d_checkpoint_tail, sizeof(unsigned int)));
-    // chkerr(cudaMemset(task_pointers.d_checkpoint_tail, 0, sizeof(unsigned int)));
-
-    size_t oneTask = sizeof(Task) + MAX_BLK_SIZE * sizeof(uint8_t) + 2 * MAX_BLK_SIZE * sizeof(uint16_t) + 2 * sizeof(unsigned int);
-    // printf("One task takes %zu memory\n", oneTask);
-
     size_t capacity2 = SMALL_CAP;
     size_t checkpoint_capacity = SMALL_CAP;
     chkerr(cudaMalloc(&task_pointers.d_tasks_B, checkpoint_capacity * sizeof(Task)));
@@ -1309,53 +828,80 @@ pn = peelG.n;
     chkerr(cudaMalloc(&task_pointers.d_all_neiInP_B, checkpoint_capacity * MAX_BLK_SIZE * sizeof(uint16_t)));
     chkerr(cudaMalloc(&task_pointers.d_tail_B, sizeof(unsigned int)));
 
-    // chkerr(cudaMalloc(&task_pointers.d_tiny_tasks_B, capacity2 * sizeof(TinyTask)));
-    // chkerr(cudaMalloc(&task_pointers.d_tiny_tail_B, sizeof(unsigned int)));
-    // chkerr(cudaMemset(task_pointers.d_tiny_tail_B, 0, sizeof(unsigned int)));
-
     cudaMalloc(&task_pointers.d_tasks_C, capacity2 * sizeof(Task));
     cudaMalloc(&task_pointers.d_all_labels_C, capacity2 * MAX_BLK_SIZE * sizeof(uint8_t));
     cudaMalloc(&task_pointers.d_all_neiInG_C, capacity2 * MAX_BLK_SIZE * sizeof(uint16_t));
     cudaMalloc(&task_pointers.d_all_neiInP_C, capacity2 * MAX_BLK_SIZE * sizeof(uint16_t));
     cudaMalloc(&task_pointers.d_tail_C, sizeof(unsigned int));
 
-    // chkerr(cudaMalloc(&task_pointers.d_tiny_tasks_C, capacity2 * sizeof(TinyTask)));
-    // chkerr(cudaMalloc(&task_pointers.d_tiny_tail_C, sizeof(unsigned int)));
-    // chkerr(cudaMemset(task_pointers.d_tiny_tail_C, 0 , sizeof(unsigned int)));
+    chkerr(cudaMalloc(&d_abort_flag, sizeof(int)));
+    chkerr(cudaMalloc(&d_abort2, sizeof(int)));
+    chkerr(cudaMalloc(&d_abort3, sizeof(int)));
+    chkerr(cudaMemset(d_abort_flag, 0, sizeof(int)));
+    chkerr(cudaMemset(d_abort2, 0, sizeof(int)));
+    chkerr(cudaMemset(d_abort3, 0, sizeof(int)));
 
-    // allocate_tiny_task_queues(task_pointers);
-
-    cudaMalloc(&d_abort_flag, sizeof(int));
-    cudaMalloc(&d_abort2, sizeof(int));
-    cudaMalloc(&d_abort3, sizeof(int));
-    cudaMemset(d_abort_flag, 0, sizeof(int));
-    cudaMemset(d_abort2, 0, sizeof(int));
-
-    // unsigned int* d_resume_checked;
-    // unsigned int* d_resume_errors;
-
-    // chkerr(cudaMalloc(&d_resume_checked, sizeof(unsigned int)));
-    // chkerr(cudaMalloc(&d_resume_errors, sizeof(unsigned int)));
-
-    graph<intT> subg;
-
-    HostTaskBuffer buf;
-    // initHostTaskBuffer(buf, 10*MAX_CAP);
-    
-    HostTask* h_task_stage = nullptr;
-    // cudaHostAlloc(&h_task_stage, STAGING_CHUNK * sizeof(HostTask), cudaHostAllocDefault);
+    // {
+    //     size_t free_bytes = 0, total_bytes = 0;
+    //     chkerr(cudaMemGetInfo(&free_bytes, &total_bytes));
+    //     printf("GPU memory after fixed allocations: %.2f GB free / %.2f GB total (task queue A can grow into this)\n",
+    //            free_bytes / (1024.0*1024.0*1024.0), total_bytes / (1024.0*1024.0*1024.0));
+    // }
 
     cudaEventRecord(event_start);
-    
 
-    // unsigned long long* h_cycles;
-    // h_cycles = (unsigned long long *)malloc(40 * sizeof(unsigned long long));
-    // printf("Total Iterations: %d\n", (pn/WARPS)+1);
     int h_abort = 1;
 
     // Total nodes = 27000, warps = 4454, 
 
     unsigned int tail_max = 0;
+
+    auto clearSearchBuffers = [&]() {
+        chkerr(cudaMemset(d_blk_counter, 0, WARPS * sizeof(unsigned int)));
+        chkerr(cudaMemset(d_left_counter, 0, WARPS * sizeof(unsigned int)));
+        chkerr(cudaMemset(d_hopSz, 0, WARPS * sizeof(unsigned int)));
+        chkerr(cudaMemset(d_visited, 0, range * WARPS * sizeof(uint32_t)));
+        chkerr(cudaMemset(d_adj, 0, ADJSIZE * WARPS * sizeof(uint32_t)));
+        chkerr(cudaMemset(d_left_adj, 0, LEFT_ADJ_SIZE * WARPS * sizeof(uint32_t)));
+        chkerr(cudaMemset(d_local_left_adj, 0, LOCAL_LEFT_ADJ_SIZE * WARPS * sizeof(uint32_t)));
+        chkerr(cudaMemset(commonMtx, 0, totalBytes));
+        chkerr(cudaMemset(d_sz, 0, WARPS * sizeof(unsigned int)));
+    };
+
+    auto processCurrentGpuSubgraphs = [&](int kernel_idx) {
+        calculateDegrees<<<BLK_NUMS, BLK_DIM>>>(kernel_idx, plex_pointers, graph_pointers, subgraph_pointers, d_blk, d_blk_counter, d_left, d_left_counter, d_visited, global_count, left_count);
+        cudaDeviceSynchronize();
+        checkCudaError(1);
+
+        computeOffsets(subgraph_pointers, d_blk_counter);
+        cudaDeviceSynchronize();
+        checkCudaError(2);
+
+        fillNeighbors<<<BLK_NUMS, BLK_DIM>>>(kernel_idx, subgraph_pointers, plex_pointers, graph_pointers, d_blk, d_blk_counter, d_left, d_left_counter, d_hopSz, commonMtx, d_adj, d_left_adj, d_local_left_adj);
+        cudaDeviceSynchronize();
+        checkCudaError(3);
+
+        buildCommonMtx<<<BLK_NUMS, BLK_DIM>>>(kernel_idx, plex_pointers, subgraph_pointers, graph_pointers, commonMtx, d_hopSz);
+        cudaDeviceSynchronize();
+        checkCudaError(4);
+
+        chkerr(cudaMemset(d_abort_flag, 0, sizeof(int)));
+        h_abort = 1;
+        while(h_abort)
+        {
+            chkerr(cudaMemset(d_abort2, 0, sizeof(int)));
+            kSearch<<<BLK_NUMS, BLK_DIM>>>(kernel_idx, plex_pointers, subgraph_pointers, graph_pointers, task_pointers, d_blk_counter, d_res, d_br, d_state, d_len, d_sz, neiInG, neiInP, plex_count, commonMtx, recCand1, recCand2, d_v2delete, d_adj, cycles, d_abort2, d_abort_flag, global_count);
+            cudaDeviceSynchronize();
+            checkCudaError(5);
+            chkerr(cudaMemcpy(&h_abort, d_abort2, sizeof(int), cudaMemcpyDeviceToHost));
+
+            int* tmp = d_abort_flag;
+            d_abort_flag = d_abort2;
+            d_abort2 = tmp;
+
+            initializeBNB(6, task_pointers, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, plex_count, bnb_neiInG, bnb_neiInP, d_sat, d_uni, cycles, d_adj, d_left_adj, d_local_left_adj, d_abort3, global_count);
+        }
+    };
 
     for (int i = 0; i < (pn/WARPS)+1; i++)
     {
@@ -1364,101 +910,9 @@ pn = peelG.n;
         cudaDeviceSynchronize();
         checkCudaError(0);
 
-        // cudaEventRecord(event_stop);
-        // cudaEventSynchronize(event_stop);
-        // float time_milli_sec = 0;
-        // cudaEventElapsedTime(&time_milli_sec, event_start, event_stop);
-        // time_1 += time_milli_sec;
-        // cudaEventRecord(event_start);
+        processCurrentGpuSubgraphs(i);
+        clearSearchBuffers();
 
-        calculateDegrees<<<BLK_NUMS, BLK_DIM>>>(i, plex_pointers, graph_pointers, subgraph_pointers, d_blk, d_blk_counter, d_left, d_left_counter, global_count, left_count);
-        cudaDeviceSynchronize();
-        checkCudaError(1);
-
-        // cudaEventRecord(event_stop);
-        // cudaEventSynchronize(event_stop);
-        // time_milli_sec = 0;
-        // cudaEventElapsedTime(&time_milli_sec, event_start, event_stop);
-        // time_2 += time_milli_sec;
-        // cudaEventRecord(event_start);
-
-        computeOffsets(subgraph_pointers, d_blk_counter);
-        cudaDeviceSynchronize();
-        checkCudaError(2);
-
-        // cudaEventRecord(event_stop);
-        // cudaEventSynchronize(event_stop);
-        // time_milli_sec = 0;
-        // cudaEventElapsedTime(&time_milli_sec, event_start, event_stop);
-        // time_3 += time_milli_sec;
-        // cudaEventRecord(event_start);
-
-        fillNeighbors<<<BLK_NUMS, BLK_DIM>>>(i, subgraph_pointers, plex_pointers, graph_pointers, d_blk, d_blk_counter, d_left, d_left_counter, d_hopSz, commonMtx, d_adj);
-        cudaDeviceSynchronize();
-        checkCudaError(3);
-
-        // cudaEventRecord(event_stop);
-        // cudaEventSynchronize(event_stop);
-        // time_milli_sec = 0;
-        // cudaEventElapsedTime(&time_milli_sec, event_start, event_stop);
-        // time_4 += time_milli_sec;
-        // cudaEventRecord(event_start);
-
-        buildCommonMtx<<<BLK_NUMS, BLK_DIM>>>(i, plex_pointers, subgraph_pointers, graph_pointers, commonMtx, d_hopSz);
-        cudaDeviceSynchronize();
-        checkCudaError(4);
-
-        // cudaEventRecord(event_stop);
-        // cudaEventSynchronize(event_stop);
-        // time_milli_sec = 0;
-        // cudaEventElapsedTime(&time_milli_sec, event_start, event_stop);
-        // time_1 += time_milli_sec;
-        // cudaEventRecord(event_start);
-
-        
-        cudaMemset(d_abort_flag, 0, sizeof(int));
-        h_abort = 1;
-        while(h_abort)
-        {
-            cudaMemset(d_abort2, 0, sizeof(int));
-            kSearch<<<BLK_NUMS, BLK_DIM>>>(i, plex_pointers, subgraph_pointers, graph_pointers, task_pointers, d_blk_counter, d_res, d_br, d_state, d_len, d_sz, neiInG, neiInP, plex_count, commonMtx, recCand1, recCand2, d_v2delete, d_adj, cycles, d_abort2, d_abort_flag, global_count);
-            cudaDeviceSynchronize();
-            checkCudaError(5);
-            cudaMemcpy(&h_abort, d_abort2, sizeof(int), cudaMemcpyDeviceToHost);
-
-            // cudaEventRecord(event_stop);
-            // cudaEventSynchronize(event_stop);
-            // time_milli_sec = 0;
-            // cudaEventElapsedTime(&time_milli_sec, event_start, event_stop);
-            // time_2 += time_milli_sec;
-            // cudaEventRecord(event_start);
-
-            int* tmp = d_abort_flag;
-            d_abort_flag = d_abort2;
-            d_abort2 = tmp;
-
-            initializeBNB(6, task_pointers, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, plex_count, bnb_neiInG, bnb_neiInP, d_sat, d_commons, d_uni, cycles, d_adj, d_abort3, global_count);
-            // initializeBNB2(6, task_pointers, plex_pointers, subgraph_pointers, d_blk, d_left, d_blk_counter, d_left_counter, commonMtx, plex_count, d_sat, d_commons, d_uni, cycles, d_adj, d_abort3, buf, h_task_stage, d_state2, d_res2, recExcl, recCand);
-
-            // cudaEventRecord(event_stop);
-            // cudaEventSynchronize(event_stop);
-            // time_milli_sec = 0;
-            // cudaEventElapsedTime(&time_milli_sec, event_start, event_stop);
-            // time_3 += time_milli_sec;
-            // cudaEventRecord(event_start);
-        }
-
-        // kSearch3<<<BLK_NUMS, BLK_DIM>>>(i, plex_pointers, subgraph_pointers, graph_pointers, task_pointers, d_left, d_blk_counter, d_left_counter, d_res, d_br, d_state, d_len, d_sz, neiInG, neiInP, plex_count, commonMtx, recCand1, recCand2, recExcl, recCand, d_v2delete, d_adj, d_sat, d_commons, d_uni, global_count);
-        
-        // }
-        cudaMemset(d_blk_counter, 0, WARPS * sizeof(unsigned int));
-        cudaMemset(d_left_counter, 0, WARPS * sizeof(unsigned int));
-        cudaMemset(d_hopSz, 0, WARPS * sizeof(unsigned int));
-        cudaMemset(d_visited, 0, range * WARPS * sizeof(uint32_t));
-        cudaMemset(d_adj, 0, ADJSIZE * WARPS * sizeof(uint32_t));
-        //cudaMemset(d_count, 0, pn * WARPS * sizeof(uint16_t));
-        cudaMemset(commonMtx, 0, totalBytes);
-        cudaMemset(d_sz, 0, WARPS * sizeof(unsigned int));
 
         // cudaEventRecord(event_stop);
         // cudaEventSynchronize(event_stop);
@@ -1474,21 +928,16 @@ pn = peelG.n;
     cudaEventElapsedTime(&time_milli_sec, event_start, event_stop);
     time_0 += time_milli_sec;
     printf("Total Time Elapsed: %f ms\n", time_0);
-    
+
     // printf("Time 0: %f, Time 1: %f, Time 2: %f, Time 3: %f, Time 4: %f, Time 5: %f, Time 6: %f\n", time_0, time_1, time_2, time_3, time_4, time_5, time_6);
-    
+
     cudaMemcpy(&h_plex_count, plex_count, sizeof(unsigned int), cudaMemcpyDeviceToHost);
     cudaMemcpy(&h_validblk, validblk, sizeof(unsigned int), cudaMemcpyDeviceToHost);
     cudaMemcpy(&h_global, global_count, sizeof(unsigned int), cudaMemcpyDeviceToHost);
     printf("Total Valid Blocks: %d, Maximal k-Plexes: %u\n", h_validblk, h_plex_count);
     // printf("Total tasks generated: %u\n", h_global);
-    printf("\nKernel Launch Successfully\n");
+    // printf("\nKernel Launch Successfully\n");
     free_graph_gpu_memory(graph_pointers, degen_pointers);
-    // free_tiny_task_queues(task_pointers);
-    // cudaFree(d_resume_checked);
-    // cudaFree(d_resume_errors);
-    // delete[] buf.tasks;
-    // cudaFreeHost(h_task_stage);
 }
 
 #endif // CUTS_HOST_FUNCS_H
