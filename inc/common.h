@@ -1,29 +1,28 @@
 #include <cstdint>
 #include <numeric>
 
-#define BLK_NUMS 142 
+#define BLK_NUMS 142
 #define BLK_DIM 1024
 #define WARPS_EACH_BLK (BLK_DIM/32)
 #define WARPS (BLK_NUMS*WARPS_EACH_BLK)
-#define MAX_BLK_SIZE 1024 // Maximum size of my neighborhood 
-#define AVG_DEGREE 200
-#define AVG_LEFT_DEGREE 200
-#define MAX_CAP 2048 * 2048 
+#define MAX_BLK_SIZE 1024 // Maximum size of my neighborhood
+#define MAX_LEFT_SIZE 1024
+#define AVG_DEGREE 400
+#define MAX_CAP 2048 * 2048
 #define SMALL_CAP 512 * 512 * 2
-#define K_LIMIT 10
+
 #define MAX_DEPTH 1000
 #define CAP MAX_BLK_SIZE * MAX_BLK_SIZE
 #define ADJSIZE ((MAX_BLK_SIZE * MAX_BLK_SIZE) / 32)
-#define STAGING_CHUNK 1024*1024
+#define MASK_WORDS ((MAX_BLK_SIZE + 31) / 32)
+#define LEFT_MASK_WORDS ((MAX_LEFT_SIZE + 31) / 32)
+#define LEFT_ADJ_SIZE (MAX_LEFT_SIZE * MASK_WORDS)
+#define LOCAL_LEFT_ADJ_SIZE (MAX_BLK_SIZE * LEFT_MASK_WORDS)
+#define MAXIMAL_MASK_WORDS (2 * MASK_WORDS + LEFT_MASK_WORDS)
+
 using namespace std;
 
 enum : uint8_t{
-    //-------------BNB------------
-    // P = 0,
-    // C1 = 1,
-    // C2 = 2,
-    // X = 3
-    //------------BK------------
     P = 0,
     C = 1,
     X = 2,
@@ -34,7 +33,7 @@ enum : uint8_t{
     K = 7
 };
 
-enum : uint8_t{        
+enum : uint8_t{
     UNLINK2LESS=0,
     LINK2LESS=1,
     UNLINK2EQUAL=2,
@@ -47,6 +46,7 @@ typedef struct P_pointers{
     int k;
     int lb;
     int bd; //q-k
+    int local_bnb_steps;
     float thres;
 } P_pointers;
 
@@ -66,11 +66,8 @@ typedef struct S_pointers{
     unsigned int* n;
     unsigned int* m;
     unsigned int *offsets;
-    unsigned int *l_offsets;
     unsigned int *neighbors;
-    unsigned int *l_neighbors;
     unsigned int *degree;
-    unsigned int *l_degree;
     unsigned int *degreeHop;
     unsigned int* P;
     unsigned int* C;
@@ -85,67 +82,12 @@ typedef struct S_pointers{
     unsigned int* XB;
 } S_pointers;
 
-typedef struct H_pointers{
-    unsigned int* h_degree;
-    unsigned int* h_degree_hop;
-    unsigned int* h_offsets;
-    unsigned int* h_neighbors;
-    unsigned int* h_blk_counter;
-    bool *h_proper;
-    unsigned int* h_hopSz;
-    uint8_t* h_commonMtx;
-} H_pointers;
-
-struct State {
-    std::vector<int> P;
-    std::vector<int> C;
-    std::vector<int> X;
-    std::vector<int> missing;
-    std::vector<int> left;
-
-    // Constructor to copy in all five arrays
-    State(std::vector<int> P_,
-          std::vector<int> C_,
-          std::vector<int> X_,
-          std::vector<int> missing_,
-          std::vector<int> left_)
-        : P(std::move(P_))
-        , C(std::move(C_))
-        , X(std::move(X_))
-        , missing(std::move(missing_))
-        , left(std::move(left_))
-    {}
-};
-
-struct State2 {
-    std::vector<int> P;
-    std::vector<int> C;
-    std::vector<int> X;
-    std::vector<int> missing;
-    std::vector<int> left;
-    unsigned int * blk;
-
-    // Constructor to copy in all five arrays
-    State2(std::vector<int> P_,
-          std::vector<int> C_,
-          std::vector<int> X_,
-          std::vector<int> missing_,
-          std::vector<int> left_, 
-          unsigned int* blk_)
-        : P(std::move(P_))
-        , C(std::move(C_))
-        , X(std::move(X_))
-        , missing(std::move(missing_))
-        , left(std::move(left_))
-        , blk(blk_)
-    {}
-};
-
 struct Task{
     int idx;
     unsigned int PlexSz;
     unsigned int CandSz;
     unsigned int ExclSz;
+    unsigned int edgePotential;
     uint8_t* labels; // labels = [P, C ,X ,C, C]
     uint16_t* neiInG;
     uint16_t* neiInP;
@@ -158,50 +100,17 @@ struct Task{
          unsigned int ExclSz_,
          uint8_t* labels_,
          uint16_t* neiInG_,
-         uint16_t* neiInP_)
+         uint16_t* neiInP_,
+         unsigned int edgePotential_ = 0)
          : idx(idx_)
          , PlexSz(PlexSz_)
          , CandSz(CandSz_)
          , ExclSz(ExclSz_)
+         , edgePotential(edgePotential_)
          , labels(labels_)
          , neiInG(neiInG_)
          , neiInP(neiInP_)
     {}
-};
-
-struct HostTask{
-    int idx;
-    unsigned int PlexSz;
-    unsigned int CandSz;
-    unsigned int ExclSz;
-
-    uint8_t labels[MAX_BLK_SIZE];
-    uint16_t neiInG[MAX_BLK_SIZE];
-    uint16_t neiInP[MAX_BLK_SIZE];
-};
-
-struct HostTaskBuffer{
-    HostTask *tasks;
-    unsigned int capacity;
-    unsigned int size;
-};
-
-struct Frame{
-    int res;
-    int br;
-    int state;
-    int v2delete;
-    vector<int> v2adds;
-
-    Frame() {}
-
-    Frame(int res_,
-          int br_,
-          int state_)
-          : res(res_)
-          , br(br_)
-          , state(state_)
-          {}
 };
 
 typedef struct T_pointers{
